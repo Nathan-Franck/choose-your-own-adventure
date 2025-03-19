@@ -277,12 +277,6 @@ The game state should be in JSON format with the following structure:
 }
 """
 
-THEMING = """
-    Be creative, and engaging. Keep your response to at most 3 sentences, and use simple language that someone learning english would understand.
-    It has talking animals in it, and it's fit for a 4 year old.
-"""
-
-
 def generate_scenario():
     """Generate the initial game scenario with a win objective."""
     scenario_prompt = """
@@ -296,7 +290,9 @@ def generate_scenario():
     4. A brief description of the surroundings and situation, and what other characters are at this location
     5. A clear win objective for the player to achieve (find an item, reach a location, solve a puzzle, etc.)
     
-    {THEMING}
+    Be creative, and engaging. Keep your response to at most 1 short paragraph, and use simple language that someone learning english would understand.
+    We're not trying to be whimsical or goofy, but grounded, like a simple but wise fable.
+    Don't be too verbose, just a short paragraph. Use words a 4 year old would understand.
     Clearly state the win objective at the end.
     """
 
@@ -484,7 +480,7 @@ def get_narrator_response(current_state, player_action, last_response=None):
     The player's action is: "{player_action}"
     
     As the narrator of this text adventure game, describe what happens next.
-    {THEMING}
+    Be creative, and engaging. We're not trying to be whimsical or goofy, but grounded, like a simple but wise fable.
     
     Remember that the player can:
     - Move around between adjacent locations
