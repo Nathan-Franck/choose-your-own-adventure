@@ -38,26 +38,86 @@ def print_wrapped(text, color=None):
 def print_debug(title, content, color=Fore.MAGENTA):
     """Print debug information with formatting."""
     if DEBUG:
-        print("\n" + "="*40)
+        print("\n" + "="*80)
         print_wrapped(f"{color}[DEBUG] {title}{Style.RESET_ALL}", color)
-        print("-"*40)
-        print_wrapped(content, Fore.CYAN)
-        print("="*40 + "\n")
+        print("-"*80)
+        print(content)  # Don't wrap XML content - we'll format it specially
+        print("="*80 + "\n")
+
+def indent_xml(elem, level=0):
+    """Custom XML indentation function for compatibility with all Python versions."""
+    i = "\n" + level*"  "
+    if len(elem):
+        if not elem.text or not elem.text.strip():
+            elem.text = i + "  "
+        if not elem.tail or not elem.tail.strip():
+            elem.tail = i
+        for elem in elem:
+            indent_xml(elem, level+1)
+        if not elem.tail or not elem.tail.strip():
+            elem.tail = i
+    else:
+        if level and (not elem.tail or not elem.tail.strip()):
+            elem.tail = i
 
 def format_xml(xml_string):
-    """Format XML string for better readability."""
+    """Format XML string for better readability in the terminal."""
     try:
         # Parse the XML string
         root = ET.fromstring(xml_string)
-        # Convert back to string with pretty formatting
-        from xml.dom import minidom
-        pretty_xml = minidom.parseString(ET.tostring(root)).toprettyxml(indent="  ")
-        # Remove extra blank lines that minidom sometimes adds
-        pretty_xml = '\n'.join([line for line in pretty_xml.split('\n') if line.strip()])
-        return pretty_xml
+        
+        # Apply custom indentation
+        indent_xml(root)
+        
+        # Convert to string with proper formatting
+        xml_str = ET.tostring(root, encoding='unicode')
+        
+        # Add proper XML declaration
+        xml_str = '<?xml version="1.0" encoding="UTF-8"?>\n' + xml_str
+        
+        # Format long attribute lines for better readability
+        lines = xml_str.split('\n')
+        result_lines = []
+        
+        for line in lines:
+            # If line is too long and has multiple attributes, break it up
+            if len(line) > 80 and ' ' in line and '=' in line:
+                # Find tag opening and attributes
+                tag_match = re.match(r'^(\s*)(<[^\s>]+)(.*?)(/?>)$', line)
+                if tag_match:
+                    indent, tag_open, attrs, tag_close = tag_match.groups()
+                    
+                    # Start with the opening tag
+                    result_lines.append(f"{indent}{tag_open}")
+                    
+                    # Add each attribute on a new line with extra indentation
+                    attr_indent = indent + "    "
+                    attr_pairs = re.findall(r'\s+([^\s=]+)="([^"]*)"', attrs)
+                    for name, value in attr_pairs:
+                        result_lines.append(f"{attr_indent}{name}=\"{value}\"")
+                    
+                    # Add the closing bracket
+                    result_lines.append(f"{indent}{tag_close}")
+                else:
+                    result_lines.append(line)
+            else:
+                result_lines.append(line)
+        
+        return '\n'.join(result_lines)
     except Exception as e:
         print_debug("XML Formatting Error", str(e), Fore.RED)
-        return xml_string
+        
+        # Fallback formatting if the above fails
+        try:
+            # Basic indentation with minidom
+            from xml.dom import minidom
+            pretty_xml = minidom.parseString(xml_string).toprettyxml(indent="  ")
+            # Remove extra blank lines
+            pretty_xml = '\n'.join([line for line in pretty_xml.split('\n') if line.strip()])
+            return pretty_xml
+        except:
+            # Last resort: just return the original
+            return xml_string
 
 def call_llm(messages, temperature=0.7, max_tokens=1024):
     """Call the LM Studio API with the given messages."""
