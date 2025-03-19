@@ -1,9 +1,8 @@
 import requests
-import xml.etree.ElementTree as ET
+import json
 import re
 import os
 import textwrap
-import json
 import argparse
 from colorama import Fore, Style, init
 
@@ -41,91 +40,24 @@ def print_debug(title, content, color=Fore.MAGENTA):
         print("\n" + "="*80)
         print_wrapped(f"{color}[DEBUG] {title}{Style.RESET_ALL}", color)
         print("-"*80)
-        print(content)  # Don't wrap XML content - we'll format it specially
+        
+        # Format content based on type
+        if isinstance(content, dict) or isinstance(content, list):
+            formatted_content = json.dumps(content, indent=2)
+            print(formatted_content)
+        else:
+            print(content)
+            
         print("="*80 + "\n")
-
-def indent_xml(elem, level=0):
-    """Custom XML indentation function for compatibility with all Python versions."""
-    i = "\n" + level*"  "
-    if len(elem):
-        if not elem.text or not elem.text.strip():
-            elem.text = i + "  "
-        if not elem.tail or not elem.tail.strip():
-            elem.tail = i
-        for elem in elem:
-            indent_xml(elem, level+1)
-        if not elem.tail or not elem.tail.strip():
-            elem.tail = i
-    else:
-        if level and (not elem.tail or not elem.tail.strip()):
-            elem.tail = i
-
-def format_xml(xml_string):
-    """Format XML string for better readability in the terminal."""
-    try:
-        # Parse the XML string
-        root = ET.fromstring(xml_string)
-        
-        # Apply custom indentation
-        indent_xml(root)
-        
-        # Convert to string with proper formatting
-        xml_str = ET.tostring(root, encoding='unicode')
-        
-        # Add proper XML declaration
-        xml_str = '<?xml version="1.0" encoding="UTF-8"?>\n' + xml_str
-        
-        # Format long attribute lines for better readability
-        lines = xml_str.split('\n')
-        result_lines = []
-        
-        for line in lines:
-            # If line is too long and has multiple attributes, break it up
-            if len(line) > 80 and ' ' in line and '=' in line:
-                # Find tag opening and attributes
-                tag_match = re.match(r'^(\s*)(<[^\s>]+)(.*?)(/?>)$', line)
-                if tag_match:
-                    indent, tag_open, attrs, tag_close = tag_match.groups()
-                    
-                    # Start with the opening tag
-                    result_lines.append(f"{indent}{tag_open}")
-                    
-                    # Add each attribute on a new line with extra indentation
-                    attr_indent = indent + "    "
-                    attr_pairs = re.findall(r'\s+([^\s=]+)="([^"]*)"', attrs)
-                    for name, value in attr_pairs:
-                        result_lines.append(f"{attr_indent}{name}=\"{value}\"")
-                    
-                    # Add the closing bracket
-                    result_lines.append(f"{indent}{tag_close}")
-                else:
-                    result_lines.append(line)
-            else:
-                result_lines.append(line)
-        
-        return '\n'.join(result_lines)
-    except Exception as e:
-        print_debug("XML Formatting Error", str(e), Fore.RED)
-        
-        # Fallback formatting if the above fails
-        try:
-            # Basic indentation with minidom
-            from xml.dom import minidom
-            pretty_xml = minidom.parseString(xml_string).toprettyxml(indent="  ")
-            # Remove extra blank lines
-            pretty_xml = '\n'.join([line for line in pretty_xml.split('\n') if line.strip()])
-            return pretty_xml
-        except:
-            # Last resort: just return the original
-            return xml_string
 
 def call_llm(messages, temperature=0.7, max_tokens=1024):
     """Call the LM Studio API with the given messages."""
     try:
-        # # Print debug info about the request
-        # if DEBUG:
-        #     debug_messages = json.dumps(messages, indent=2)
-        #     print_debug("API Request", f"Temperature: {temperature}\nMessages:\n{debug_messages}")
+        if DEBUG:
+            print_debug("API Request", {
+                "temperature": temperature,
+                "messages": messages
+            })
         
         response = requests.post(
             API_URL,
@@ -140,41 +72,67 @@ def call_llm(messages, temperature=0.7, max_tokens=1024):
         response.raise_for_status()
         result = response.json()["choices"][0]["message"]["content"]
         
-        # # Print debug info about the response
-        # if DEBUG:
-        #     print_debug("API Response", result, Fore.GREEN)
+        if DEBUG:
+            print_debug("API Response", result, Fore.GREEN)
             
         return result
     except requests.exceptions.RequestException as e:
         print_debug("API Error", str(e), Fore.RED)
         print_wrapped(f"Error calling LM Studio API: {e}", Fore.RED)
         return None
-    
-state_spec = """
-    For the status effects section, use this format:
-    <status-effect time="[time-since-first-applied]" expired="false/true">
-        [Brief description of status]
-    </status-effect>
 
-    For the locations section, use this format:
-    <location name="[location-name]" explored="false/true">
-      <brief-description>[brief description]</brief-description>
-      <adjacent-locations>
-        <adjacent name="[adjacent-location-name]"/>
-        <!-- More adjacent locations as needed -->
-      </adjacent-locations>
-    </location>
+# Game state specification - centralized for reuse
+STATE_SPEC = """
+The game state should be in JSON format with the following structure:
 
-    For the characters section, use this format:
-    <character name="[character-name]" being-type="[being-type]" emotion="[current-emotion]" location="[current-location]">
-        <brief-description></brief-description>
-        <thoughts>
-        </thoughts>
-        <inventory>
-        </inventory>
-        <status-effects>
-        </status-effects>
-    </character>
+{
+  "gameStatus": "playing", // Can be "playing", "win", or "lose"
+  "objective": "Description of the win objective",
+  "playerCharacter": {
+    "beingType": "human/animal/etc",
+    "location": "current-location-name",
+    "inventory": [
+      {
+        "name": "item-name",
+        "description": "brief description"
+      }
+    ],
+    "statusEffects": [
+      {
+        "description": "Brief description of status",
+        "timeSinceApplied": "duration",
+        "expired": false
+      }
+    ]
+  },
+  "characters": [
+    {
+      "name": "character-name",
+      "beingType": "human/animal/etc",
+      "emotion": "current-emotion",
+      "location": "current-location-name",
+      "description": "brief description",
+      "thoughts": "what the character is thinking",
+      "inventory": [
+        {
+          "name": "item-name",
+          "description": "brief description"
+        }
+      ],
+      "statusEffects": []
+    }
+  ],
+  "locations": [
+    {
+      "name": "location-name",
+      "explored": true/false,
+      "description": "brief description",
+      "adjacentLocations": [
+        "adjacent-location-name"
+      ]
+    }
+  ]
+}
 """
 
 def generate_scenario():
@@ -200,25 +158,20 @@ def generate_scenario():
     return scenario
 
 def initialize_game_state(scenario):
-    """Initialize the XML game state based on the scenario."""
-    # Create base XML structure with new elements
-    base_xml = """
-    <game-state game-status="playing">
-      <objective>Not yet determined</objective>
-      <player-character being-type="none" location="none">
-        <inventory>
-        </inventory>
-        <status-effects>
-        </status-effects>
-      </player-character>
-      <characters>
-        <!-- Will be populated with discovered characters -->
-      </characters>
-      <locations>
-        <!-- Will be populated with discovered locations -->
-      </locations>
-    </game-state>
-    """
+    """Initialize the JSON game state based on the scenario."""
+    # Create base JSON structure
+    base_state = {
+        "gameStatus": "playing",
+        "objective": "Not yet determined",
+        "playerCharacter": {
+            "beingType": "none",
+            "location": "none",
+            "inventory": [],
+            "statusEffects": []
+        },
+        "characters": [],
+        "locations": []
+    }
     
     # Extract information from scenario using the state aggregator
     state_prompt = f"""
@@ -226,7 +179,7 @@ def initialize_game_state(scenario):
     
     "{scenario}"
     
-    Update this XML game state to reflect:
+    Update this JSON game state to reflect:
     1. The win objective
     2. The character type and starting location
     3. Inventory items
@@ -234,34 +187,43 @@ def initialize_game_state(scenario):
     
     Here's the template:
     
-    {base_xml}
+    {json.dumps(base_state, indent=2)}
     
-    {state_spec}
+    {STATE_SPEC}
     
-    Return ONLY the updated XML, nothing else.
+    Return ONLY the updated JSON, nothing else.
     """
     
     messages = [{"role": "user", "content": state_prompt}]
-    xml_response = call_llm(messages, temperature=0.2)
+    json_response = call_llm(messages, temperature=0.2)
     
-    # Extract XML from response
-    xml_match = re.search(r'<game-state.*?</game-state>', xml_response, re.DOTALL)
-    if xml_match:
-        xml_result = xml_match.group(0)
-        if DEBUG:
-            print_debug("Initial Game State", format_xml(xml_result), Fore.BLUE)
-        return xml_result
-    else:
-        # Fallback if XML extraction fails
-        print_debug("XML Extraction Failed", "Using base XML template", Fore.RED)
-        return base_xml.strip()
+    # Extract JSON from response
+    try:
+        # Try to find a JSON object in the response
+        json_match = re.search(r'({[\s\S]*})', json_response)
+        if json_match:
+            json_str = json_match.group(1)
+            game_state = json.loads(json_str)
+            if DEBUG:
+                print_debug("Initial Game State", game_state, Fore.BLUE)
+            return game_state
+        else:
+            # If no JSON found, try to parse the entire response
+            game_state = json.loads(json_response)
+            if DEBUG:
+                print_debug("Initial Game State", game_state, Fore.BLUE)
+            return game_state
+    except json.JSONDecodeError as e:
+        # Fallback if JSON extraction fails
+        print_debug("JSON Extraction Failed", f"Error: {str(e)}\nResponse: {json_response}", Fore.RED)
+        return base_state
 
 def update_game_state(current_state, player_request, narrator_response):
     """Update the game state based on the narrator's response."""
     state_prompt = f"""
     Given the current game state:
     
-    {current_state}
+    {json.dumps(current_state, indent=2)}
 
     And the player's requested action:
 
@@ -271,7 +233,7 @@ def update_game_state(current_state, player_request, narrator_response):
     
     "{narrator_response}"
     
-    Update the XML game state to reflect any changes that occurred in the narrator's response, you can consider the player's requested action as well
+    Update the JSON game state to reflect any changes that occurred in the narrator's response, you can consider the player's requested action as well
     but only if the narrator has allowed for it:
     
     1. LOCATION CHANGES:
@@ -288,48 +250,52 @@ def update_game_state(current_state, player_request, narrator_response):
        - Add or remove status effects based on what happened, this could be the stance of the player, the condition of their body or clothes,
        or their involuntary emotions or gut reactions
        - If a status effect was expired already, you can remove it
-       - If a status persists, add to its time attribute
+       - If a status persists, add to its timeSinceApplied attribute
        - If it's been long enough, set the status effect as expired, if this is reasonable
 
     4. CHARACTER CHANGES:
-        - If the player interacts with a character, update that character's thoughts, inventory, and status-effects
+        - If the player interacts with a character, update that character's thoughts, inventory, and statusEffects
         - If the character moves somewhere else, update their location, and create or update the location they enter if necessary
     
     4. WIN/LOSE CONDITIONS:
-       - Check if the player has achieved the objective. If so, set game-status="win"
-       - If the player died or became permanently trapped, set game-status="lose"
+       - Check if the player has achieved the objective. If so, set gameStatus="win"
+       - If the player died or became permanently trapped, set gameStatus="lose"
 
-    If the narrator provides additional information to anything, feel free to update the existing xml data where appropriate!
-    If the xml format is malformed, fix it, filling in any required missing information with "unknown"
-
-    {state_spec}
+    If the narrator provides additional information to anything, feel free to update the existing JSON data where appropriate!
     
-    Return ONLY the updated XML, nothing else.
+    {STATE_SPEC}
+    
+    Return ONLY the updated JSON, nothing else.
     """
     
     messages = [{"role": "user", "content": state_prompt}]
-    xml_response = call_llm(messages, temperature=0.2)
+    json_response = call_llm(messages, temperature=0.2)
     
-    # Extract XML from response
-    xml_match = re.search(r'<game-state.*?</game-state>', xml_response, re.DOTALL)
-    if xml_match:
-        xml_result = xml_match.group(0)
-        if DEBUG:
-            print_debug("Updated Game State", format_xml(xml_result), Fore.BLUE)
-        return xml_result
-    else:
-        # Fallback if XML extraction fails
-        print_debug("XML Extraction Failed", "Keeping previous state", Fore.RED)
+    # Extract JSON from response
+    try:
+        # Try to find a JSON object in the response
+        json_match = re.search(r'({[\s\S]*})', json_response)
+        if json_match:
+            json_str = json_match.group(1)
+            updated_state = json.loads(json_str)
+            if DEBUG:
+                print_debug("Updated Game State", updated_state, Fore.BLUE)
+            return updated_state
+        else:
+            # If no JSON found, try to parse the entire response
+            updated_state = json.loads(json_response)
+            if DEBUG:
+                print_debug("Updated Game State", updated_state, Fore.BLUE)
+            return updated_state
+    except json.JSONDecodeError as e:
+        # Fallback if JSON extraction fails
+        print_debug("JSON Extraction Failed", f"Error: {str(e)}\nResponse: {json_response}", Fore.RED)
         return current_state
 
 def get_narrator_response(current_state, player_action, last_response=None):
     """Get the narrator's response to the player's action."""
-    # Parse the XML to check game status
-    try:
-        root = ET.fromstring(current_state)
-        game_status = root.find(".//game-state").get("game-status", "playing")
-    except:
-        game_status = "playing"
+    # Check game status
+    game_status = current_state.get("gameStatus", "playing")
     
     # If game is over, limit the narrator's response
     if game_status in ["win", "lose"]:
@@ -342,7 +308,7 @@ def get_narrator_response(current_state, player_action, last_response=None):
     narrator_prompt = f"""
     {context}The current game state is:
     
-    {current_state}
+    {json.dumps(current_state, indent=2)}
     
     The player's action is: "{player_action}"
     
@@ -368,9 +334,8 @@ def get_narrator_response(current_state, player_action, last_response=None):
 def check_game_over(game_state):
     """Check if the game is over and return appropriate message."""
     try:
-        root = ET.fromstring(game_state)
-        game_status = root.find(".//game-state").get("game-status", "playing")
-        objective = root.find(".//objective").text
+        game_status = game_state.get("gameStatus", "playing")
+        objective = game_state.get("objective", "Unknown objective")
         
         if game_status == "win":
             return True, f"CONGRATULATIONS! You've won the game!\nObjective completed: {objective}"
