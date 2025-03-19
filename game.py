@@ -8,7 +8,7 @@ class SimpleAdventureGame:
         self.model_url = model_url
         self.game_state = {
             "inventory": [],
-            "location": "starting_point",
+            "location": "none",
             "status_effects": []
         }
         self.last_narration = ""
@@ -19,24 +19,26 @@ class SimpleAdventureGame:
         
         # Create a simple system instruction with XML tags
         system_instructions = """
-        You are the narrator of a silly choose-your-own-adventure game.
+        You are the narrator of a silly text adventure game.
         
         IMPORTANT RULES:
         1. Keep the tone light and humorous
         2. Respond directly to the player's action
         3. Keep your responses under 200 words
-        4. DO NOT restart the scene - continue from where we left off
-        5. If the player wants to check inventory, show them their items
-        6. If the player wants to use an item, let them if it makes sense
-        7. If the player wants to discard an item, remove it from their inventory
-        8. If the player finds a new item, add it to their inventory
         
-        Use these commands in your response (they will be processed by the game engine):
-        - <add_item>item name</add_item> - Add an item to inventory
-        - <remove_item>item name</remove_item> - Remove an item from inventory
-        - <set_location>location name</set_location> - Change the player's location
-        - <add_status>status name</add_status> - Add a status effect
-        - <remove_status>status name</remove_status> - Remove a status effect
+        During your response, you please wrap all key words in game tags to affect the state of the game.
+        - <addItem>item name</addItem> - Add an item to inventory
+        - <removeItem>item name</removeItem> - Remove an item from inventory
+        - <setLocation>location name</setLocation> - Change the player's location
+        - <addStatus>status name</addStatus> - Add a status effect
+        - <removeStatus>status name</removeStatus> - Remove a status effect
+        """
+
+        final_reminder = """
+        Remember to keep using game tags, including items, location and status!
+        These are the valid tags:
+            addItem, removeItem, setLocation, addStatus, removeStatus
+        Any other tags aren't real and serve no purpose.
         """
         
         # Create a simple game state description
@@ -53,7 +55,7 @@ class SimpleAdventureGame:
             context = f"PREVIOUS NARRATION:\n{self.last_narration}\n\n"
         
         # Combine everything into a single prompt
-        full_prompt = f"{system_instructions}\n\n{game_state_str}{context}PLAYER ACTION: {prompt}\n\nNARRATOR RESPONSE:"
+        full_prompt = f"{system_instructions}\n\n{game_state_str}{context}{final_reminder}\n\nPLAYER ACTION: {prompt}\n\nNARRATOR RESPONSE:"
         
         # Create a simple message structure
         messages = [{"role": "user", "content": full_prompt}]
@@ -96,14 +98,14 @@ class SimpleAdventureGame:
     def _update_game_state(self, response: str):
         """Update the game state based on XML commands in the response."""
         # Look for inventory additions
-        add_items = re.findall(r'<add_item>(.*?)</add_item>', response, re.DOTALL)
+        add_items = re.findall(r'<addItem>(.*?)</addItem>', response, re.DOTALL)
         for item in add_items:
             item = item.strip()
             if item and item not in self.game_state["inventory"]:
                 self.game_state["inventory"].append(item)
         
         # Look for inventory removals
-        remove_items = re.findall(r'<remove_item>(.*?)</remove_item>', response, re.DOTALL)
+        remove_items = re.findall(r'<removeItem>(.*?)</removeItem>', response, re.DOTALL)
         for item in remove_items:
             item = item.strip()
             if item:
@@ -114,19 +116,19 @@ class SimpleAdventureGame:
                         break
         
         # Look for location changes
-        location_changes = re.findall(r'<set_location>(.*?)</set_location>', response, re.DOTALL)
+        location_changes = re.findall(r'<setLocation>(.*?)</setLocation>', response, re.DOTALL)
         if location_changes:
             self.game_state["location"] = location_changes[-1].strip()
         
         # Look for status effect additions
-        add_effects = re.findall(r'<add_status>(.*?)</add_status>', response, re.DOTALL)
+        add_effects = re.findall(r'<addStatus>(.*?)</addStatus>', response, re.DOTALL)
         for effect in add_effects:
             effect = effect.strip()
             if effect and effect not in self.game_state["status_effects"]:
                 self.game_state["status_effects"].append(effect)
         
         # Look for status effect removals
-        remove_effects = re.findall(r'<remove_status>(.*?)</remove_status>', response, re.DOTALL)
+        remove_effects = re.findall(r'<removeStatus>(.*?)</removeStatus>', response, re.DOTALL)
         for effect in remove_effects:
             effect = effect.strip()
             if effect and effect in self.game_state["status_effects"]:
@@ -137,23 +139,38 @@ class SimpleAdventureGame:
         # Reset game state
         self.game_state = {
             "inventory": [],
-            "location": "starting_point",
+            "location": "none",
             "status_effects": []
         }
         self.last_narration = ""
         
         # Start the game with the given scenario
         start_prompt = f"""
-        You are starting a new silly text-adventure game with this scenario:
+        You are the narrator of a silly text adventure game.
         
-        {scenario}
+        IMPORTANT RULES:
+        1. Keep the tone light and humorous
+        2. Respond directly to the player's action
+        3. Keep your responses under 200 words
+        
+        During your response, you please wrap all key words in these game tags to affect the state of the game.
+        They should be used whenever appropriate in the course of your natural response.
+        - <addItem>item name</addItem> - Add an item to inventory
+        - <removeItem>item name</removeItem> - Remove an item from inventory
+        - <setLocation>location name</setLocation> - Change the player's location
+        - <addStatus>status name</addStatus> - Add a status effect
+        - <removeStatus>status name</removeStatus> - Remove a status effect
+        
+        SCENARIO: {scenario}
         
         Begin by:
-        1. Setting the starting location using <set_location>location name</set_location>
-        2. Adding 3-4 items to the player's inventory using <add_item>item name</add_item>
-        3. Adding any starting status effects using <add_status>status effect</add_status>
-        
-        Then describe the opening scene, any interesting details, and ask the player what they'd like to do next.
+        1. Establishing the starting location, with any intersting details
+        2. Describing 3-4 items in the player's inventory, they could be useful or not!
+        3. Specifying any starting status effects (who or what they are should also be considered a status)
+        Remember to keep using game tags, including items, location and status!
+        These are the valid tags:
+            addItem, removeItem, setLocation, addStatus, removeStatus
+        Any other tags aren't real and serve no purpose.
         """
         
         return self.query_llm(start_prompt)
