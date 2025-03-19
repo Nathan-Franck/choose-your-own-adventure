@@ -11,131 +11,137 @@ class SimpleAdventureGame:
             "location": "starting_point",
             "status_effects": []
         }
-        self.story_so_far = ""  # We'll use this instead of conversation history
+        self.last_narration = ""
         
     def query_llm(self, prompt: str) -> str:
         """Send a prompt to the local LLM and get a response."""
         headers = {"Content-Type": "application/json"}
         
-        # Include game state and story so far in the prompt
+        # Create a simple system instruction
         system_instructions = """
         You are the narrator of a silly choose-your-own-adventure game.
-        Keep the tone light and humorous. Respond to player actions in a way that makes sense.
-        Keep your responses concise (under 300 words).
         
-        To manage the game state, use these special commands in your response:
-        - [ADD_ITEM: item name] - Add an item to the player's inventory
-        - [REMOVE_ITEM: item name] - Remove an item from the player's inventory
-        - [SET_LOCATION: location name] - Set the player's current location
-        - [ADD_STATUS: status effect] - Add a status effect to the player
-        - [REMOVE_STATUS: status effect] - Remove a status effect from the player
+        IMPORTANT RULES:
+        1. Keep the tone light and humorous
+        2. Respond directly to the player's action
+        3. Keep your responses under 200 words
+        4. DO NOT restart the scene - continue from where we left off
+        5. If the player wants to check inventory, show them their items
+        6. If the player wants to use an item, let them if it makes sense
+        7. If the player wants to discard an item, remove it from their inventory
+        8. If the player finds a new item, add it to their inventory
+        
+        Use these commands in your response (they will be hidden from the player):
+        - #ADD_ITEM# item name - Add an item to inventory
+        - #REMOVE_ITEM# item name - Remove an item from inventory
+        - #SET_LOCATION# location name - Change the player's location
+        - #ADD_STATUS# status name - Add a status effect
+        - #REMOVE_STATUS# status name - Remove a status effect
         """
         
+        # Create a simple game state description
         game_state_str = (
             f"CURRENT GAME STATE:\n"
-            f"Location: {self.game_state['location']}\n"
-            f"Inventory: {', '.join(self.game_state['inventory']) if self.game_state['inventory'] else 'empty'}\n"
-            f"Status Effects: {', '.join(self.game_state['status_effects']) if self.game_state['status_effects'] else 'none'}\n\n"
+            f"- Location: {self.game_state['location']}\n"
+            f"- Inventory: {', '.join(self.game_state['inventory']) if self.game_state['inventory'] else 'empty'}\n"
+            f"- Status Effects: {', '.join(self.game_state['status_effects']) if self.game_state['status_effects'] else 'none'}\n\n"
         )
         
-        # Include a condensed version of the story so far
-        story_context = ""
-        if self.story_so_far:
-            story_context = f"STORY SO FAR:\n{self.story_so_far}\n\n"
+        # Include the last narration for context
+        context = ""
+        if self.last_narration:
+            context = f"PREVIOUS NARRATION:\n{self.last_narration}\n\n"
         
-        full_prompt = f"{system_instructions}\n\n{game_state_str}{story_context}PLAYER ACTION: {prompt}\n\nNARRATOR RESPONSE:"
+        # Combine everything into a single prompt
+        full_prompt = f"{system_instructions}\n\n{game_state_str}{context}PLAYER ACTION: {prompt}\n\nNARRATOR RESPONSE:"
         
-        # Simple message structure with just one user message
+        # Create a simple message structure
         messages = [{"role": "user", "content": full_prompt}]
         
         payload = {
             "model": "local-model",
             "messages": messages,
-            "temperature": 0.7,
-            "max_tokens": 800
+            "temperature": 0.5,  # Lower temperature for more consistent responses
+            "max_tokens": 500
         }
         
-        max_retries = 3
-        retry_count = 0
-        
-        while retry_count < max_retries:
-            try:
-                response = requests.post(
-                    f"{self.model_url}/chat/completions", 
-                    headers=headers, 
-                    json=payload,
-                    timeout=4 * 60
-                )
+        try:
+            response = requests.post(
+                f"{self.model_url}/chat/completions", 
+                headers=headers, 
+                json=payload,
+                timeout=4 * 60
+            )
+            
+            if response.status_code == 200:
+                response_text = response.json()["choices"][0]["message"]["content"]
                 
-                if response.status_code == 200:
-                    response_text = response.json()["choices"][0]["message"]["content"]
-                    
-                    # Parse the response for game state changes
-                    self._parse_game_state_changes(response_text)
-                    
-                    # Clean the response
-                    cleaned_response = self._clean_response(response_text)
-                    
-                    # Update the story so far (keep it manageable)
-                    if len(self.story_so_far) > 1000:  # Limit to ~1000 chars
-                        self.story_so_far = self.story_so_far[-500:]  # Keep the last 500 chars
-                    
-                    # Add a summary of this exchange to the story
-                    self.story_so_far += f"Player: {prompt}\nNarrator: {cleaned_response[:100]}...\n"
-                    
-                    return cleaned_response
-                else:
-                    print(f"Error status code: {response.status_code}")
-                    print(f"Response content: {response.text}")
-                    retry_count += 1
-                    time.sleep(1)
-                    
-            except Exception as e:
-                print(f"Error querying LLM (attempt {retry_count+1}/{max_retries}): {e}")
-                retry_count += 1
-                time.sleep(1)
-        
-        # If we get here, all retries failed
-        return "Sorry, I encountered an error processing your request. Let's continue our adventure. What would you like to do next?"
+                # Update the game state based on commands in the response
+                self._update_game_state(response_text)
+                
+                # Clean the response by removing commands
+                cleaned_response = self._clean_response(response_text)
+                
+                # Save this narration for context in the next turn
+                self.last_narration = cleaned_response
+                
+                return cleaned_response
+            else:
+                print(f"Error status code: {response.status_code}")
+                print(f"Response content: {response.text}")
+                return "Sorry, I encountered an error processing your request."
+                
+        except Exception as e:
+            print(f"Error querying LLM: {e}")
+            return "Sorry, I encountered an error processing your request."
     
-    def _parse_game_state_changes(self, response: str):
-        """Parse the response for game state changes."""
-        # Look for inventory additions
-        add_items = re.findall(r'\[ADD_ITEM: (.*?)\]', response)
+    def _update_game_state(self, response: str):
+        """Update the game state based on commands in the response."""
+        # Look for inventory additions with the new format
+        add_items = re.findall(r'#ADD_ITEM#\s+([^#\n]+)', response)
         for item in add_items:
-            if item not in self.game_state["inventory"]:
+            item = item.strip()
+            if item and item not in self.game_state["inventory"]:
                 self.game_state["inventory"].append(item)
         
-        # Look for inventory removals
-        remove_items = re.findall(r'\[REMOVE_ITEM: (.*?)\]', response)
+        # Look for inventory removals with the new format
+        remove_items = re.findall(r'#REMOVE_ITEM#\s+([^#\n]+)', response)
         for item in remove_items:
-            if item in self.game_state["inventory"]:
-                self.game_state["inventory"].remove(item)
+            item = item.strip()
+            if item:
+                # Try to find a close match if not exact
+                for inv_item in self.game_state["inventory"]:
+                    if item.lower() in inv_item.lower() or inv_item.lower() in item.lower():
+                        self.game_state["inventory"].remove(inv_item)
+                        break
         
-        # Look for location changes
-        location_changes = re.findall(r'\[SET_LOCATION: (.*?)\]', response)
+        # Look for location changes with the new format
+        location_changes = re.findall(r'#SET_LOCATION#\s+([^#\n]+)', response)
         if location_changes:
-            self.game_state["location"] = location_changes[-1]  # Use the last one if multiple
+            self.game_state["location"] = location_changes[-1].strip()
         
-        # Look for status effect additions
-        add_effects = re.findall(r'\[ADD_STATUS: (.*?)\]', response)
+        # Look for status effect additions with the new format
+        add_effects = re.findall(r'#ADD_STATUS#\s+([^#\n]+)', response)
         for effect in add_effects:
-            if effect not in self.game_state["status_effects"]:
+            effect = effect.strip()
+            if effect and effect not in self.game_state["status_effects"]:
                 self.game_state["status_effects"].append(effect)
         
-        # Look for status effect removals
-        remove_effects = re.findall(r'\[REMOVE_STATUS: (.*?)\]', response)
+        # Look for status effect removals with the new format
+        remove_effects = re.findall(r'#REMOVE_STATUS#\s+([^#\n]+)', response)
         for effect in remove_effects:
-            if effect in self.game_state["status_effects"]:
+            effect = effect.strip()
+            if effect and effect in self.game_state["status_effects"]:
                 self.game_state["status_effects"].remove(effect)
     
     def _clean_response(self, response: str) -> str:
         """Remove game state change commands from the response."""
-        cleaned = re.sub(r'\[ADD_ITEM: .*?\]', '', response)
-        cleaned = re.sub(r'\[REMOVE_ITEM: .*?\]', '', cleaned)
-        cleaned = re.sub(r'\[SET_LOCATION: .*?\]', '', cleaned)
-        cleaned = re.sub(r'\[ADD_STATUS: .*?\]', '', cleaned)
-        cleaned = re.sub(r'\[REMOVE_STATUS: .*?\]', '', cleaned)
+        # Remove all command patterns
+        cleaned = re.sub(r'#ADD_ITEM#\s+[^#\n]+', '', response)
+        cleaned = re.sub(r'#REMOVE_ITEM#\s+[^#\n]+', '', cleaned)
+        cleaned = re.sub(r'#SET_LOCATION#\s+[^#\n]+', '', cleaned)
+        cleaned = re.sub(r'#ADD_STATUS#\s+[^#\n]+', '', cleaned)
+        cleaned = re.sub(r'#REMOVE_STATUS#\s+[^#\n]+', '', cleaned)
         return cleaned.strip()
     
     def start_game(self, scenario: str):
@@ -146,7 +152,7 @@ class SimpleAdventureGame:
             "location": "starting_point",
             "status_effects": []
         }
-        self.story_so_far = ""
+        self.last_narration = ""
         
         # Start the game with the given scenario
         start_prompt = f"""
@@ -154,19 +160,32 @@ class SimpleAdventureGame:
         
         {scenario}
         
-        Begin by setting up the initial game state:
-        1. Set the starting location using [SET_LOCATION: location name]
-        2. Add 3-5 items to the player's inventory (mix of useful and silly items) using [ADD_ITEM: item name]
-        3. Add any starting status effects using [ADD_STATUS: status effect]
+        Begin by:
+        1. Setting the starting location using #SET_LOCATION# location name
+        2. Adding 3-4 items to the player's inventory using #ADD_ITEM# item name
+        3. Adding any starting status effects using #ADD_STATUS# status effect
         
-        Then describe the opening scene vividly and give the player 2-3 clear options for what to do next.
-        Keep your response under 300 words and make it fun and engaging!
+        Then describe the opening scene and give the player 2-3 clear options for what to do next.
         """
         
         return self.query_llm(start_prompt)
     
     def player_action(self, action: str) -> str:
         """Process a player's action and return the narrator's response."""
+        # Special handling for inventory management
+        if action.lower() in ["inventory", "check inventory", "what do i have"]:
+            items = ", ".join(self.game_state["inventory"]) if self.game_state["inventory"] else "nothing"
+            return f"You check your inventory and find: {items}."
+        
+        if action.lower().startswith("discard ") or action.lower().startswith("drop "):
+            item_to_discard = action.lower().replace("discard ", "").replace("drop ", "")
+            for item in self.game_state["inventory"]:
+                if item_to_discard in item.lower():
+                    self.game_state["inventory"].remove(item)
+                    return f"You discard the {item}."
+            return f"You don't have a {item_to_discard} to discard."
+        
+        # Normal action processing
         return self.query_llm(action)
 
 def main():
