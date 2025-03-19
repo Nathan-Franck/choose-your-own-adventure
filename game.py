@@ -17,7 +17,7 @@ class SimpleAdventureGame:
         """Send a prompt to the local LLM and get a response."""
         headers = {"Content-Type": "application/json"}
         
-        # Create a simple system instruction
+        # Create a simple system instruction with XML tags
         system_instructions = """
         You are the narrator of a silly choose-your-own-adventure game.
         
@@ -31,12 +31,12 @@ class SimpleAdventureGame:
         7. If the player wants to discard an item, remove it from their inventory
         8. If the player finds a new item, add it to their inventory
         
-        Use these commands in your response (they will be hidden from the player):
-        - #ADD_ITEM# item name - Add an item to inventory
-        - #REMOVE_ITEM# item name - Remove an item from inventory
-        - #SET_LOCATION# location name - Change the player's location
-        - #ADD_STATUS# status name - Add a status effect
-        - #REMOVE_STATUS# status name - Remove a status effect
+        Use these commands in your response (they will be processed by the game engine):
+        - <add_item>item name</add_item> - Add an item to inventory
+        - <remove_item>item name</remove_item> - Remove an item from inventory
+        - <set_location>location name</set_location> - Change the player's location
+        - <add_status>status name</add_status> - Add a status effect
+        - <remove_status>status name</remove_status> - Remove a status effect
         """
         
         # Create a simple game state description
@@ -79,13 +79,11 @@ class SimpleAdventureGame:
                 # Update the game state based on commands in the response
                 self._update_game_state(response_text)
                 
-                # Clean the response by removing commands
-                cleaned_response = self._clean_response(response_text)
-                
                 # Save this narration for context in the next turn
-                self.last_narration = cleaned_response
+                self.last_narration = response_text
                 
-                return cleaned_response
+                # Return the raw response without cleaning
+                return response_text
             else:
                 print(f"Error status code: {response.status_code}")
                 print(f"Response content: {response.text}")
@@ -96,16 +94,16 @@ class SimpleAdventureGame:
             return "Sorry, I encountered an error processing your request."
     
     def _update_game_state(self, response: str):
-        """Update the game state based on commands in the response."""
-        # Look for inventory additions with the new format
-        add_items = re.findall(r'#ADD_ITEM#\s+([^#\n]+)', response)
+        """Update the game state based on XML commands in the response."""
+        # Look for inventory additions
+        add_items = re.findall(r'<add_item>(.*?)</add_item>', response, re.DOTALL)
         for item in add_items:
             item = item.strip()
             if item and item not in self.game_state["inventory"]:
                 self.game_state["inventory"].append(item)
         
-        # Look for inventory removals with the new format
-        remove_items = re.findall(r'#REMOVE_ITEM#\s+([^#\n]+)', response)
+        # Look for inventory removals
+        remove_items = re.findall(r'<remove_item>(.*?)</remove_item>', response, re.DOTALL)
         for item in remove_items:
             item = item.strip()
             if item:
@@ -115,34 +113,24 @@ class SimpleAdventureGame:
                         self.game_state["inventory"].remove(inv_item)
                         break
         
-        # Look for location changes with the new format
-        location_changes = re.findall(r'#SET_LOCATION#\s+([^#\n]+)', response)
+        # Look for location changes
+        location_changes = re.findall(r'<set_location>(.*?)</set_location>', response, re.DOTALL)
         if location_changes:
             self.game_state["location"] = location_changes[-1].strip()
         
-        # Look for status effect additions with the new format
-        add_effects = re.findall(r'#ADD_STATUS#\s+([^#\n]+)', response)
+        # Look for status effect additions
+        add_effects = re.findall(r'<add_status>(.*?)</add_status>', response, re.DOTALL)
         for effect in add_effects:
             effect = effect.strip()
             if effect and effect not in self.game_state["status_effects"]:
                 self.game_state["status_effects"].append(effect)
         
-        # Look for status effect removals with the new format
-        remove_effects = re.findall(r'#REMOVE_STATUS#\s+([^#\n]+)', response)
+        # Look for status effect removals
+        remove_effects = re.findall(r'<remove_status>(.*?)</remove_status>', response, re.DOTALL)
         for effect in remove_effects:
             effect = effect.strip()
             if effect and effect in self.game_state["status_effects"]:
                 self.game_state["status_effects"].remove(effect)
-    
-    def _clean_response(self, response: str) -> str:
-        """Remove game state change commands from the response."""
-        # Remove all command patterns
-        cleaned = re.sub(r'#ADD_ITEM#\s+[^#\n]+', '', response)
-        cleaned = re.sub(r'#REMOVE_ITEM#\s+[^#\n]+', '', cleaned)
-        cleaned = re.sub(r'#SET_LOCATION#\s+[^#\n]+', '', cleaned)
-        cleaned = re.sub(r'#ADD_STATUS#\s+[^#\n]+', '', cleaned)
-        cleaned = re.sub(r'#REMOVE_STATUS#\s+[^#\n]+', '', cleaned)
-        return cleaned.strip()
     
     def start_game(self, scenario: str):
         """Start a new game with the given scenario."""
@@ -156,16 +144,16 @@ class SimpleAdventureGame:
         
         # Start the game with the given scenario
         start_prompt = f"""
-        You are starting a new silly choose-your-own-adventure game with this scenario:
+        You are starting a new silly text-adventure game with this scenario:
         
         {scenario}
         
         Begin by:
-        1. Setting the starting location using #SET_LOCATION# location name
-        2. Adding 3-4 items to the player's inventory using #ADD_ITEM# item name
-        3. Adding any starting status effects using #ADD_STATUS# status effect
+        1. Setting the starting location using <set_location>location name</set_location>
+        2. Adding 3-4 items to the player's inventory using <add_item>item name</add_item>
+        3. Adding any starting status effects using <add_status>status effect</add_status>
         
-        Then describe the opening scene and give the player 2-3 clear options for what to do next.
+        Then describe the opening scene, any interesting details, and ask the player what they'd like to do next.
         """
         
         return self.query_llm(start_prompt)
