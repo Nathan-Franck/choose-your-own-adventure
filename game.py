@@ -4,16 +4,24 @@ import re
 import os
 import textwrap
 import json
+import argparse
 from colorama import Fore, Style, init
 
 # Initialize colorama for cross-platform colored terminal output
 init()
 
-# LM Studio API endpoint
-API_URL = "http://192.168.1.74:1234/v1/chat/completions"
+# Parse command line arguments
+parser = argparse.ArgumentParser(description='Silly Text Adventure Game')
+parser.add_argument('--debug', '-d', action='store_true', help='Enable debug mode')
+parser.add_argument('--api', type=str, default="http://192.168.1.74:1234/v1", 
+                    help='LM Studio API base URL')
+args = parser.parse_args()
 
-# Debug flag - set to True to see game state and prompts
-DEBUG = False
+# LM Studio API endpoint
+API_URL = f"{args.api}/chat/completions"
+
+# Debug flag - can be set via command line or toggled in-game
+DEBUG = args.debug
 
 def clear_screen():
     """Clear the terminal screen."""
@@ -218,6 +226,11 @@ def main():
     print_wrapped("Welcome to Silly Text Adventure!", Fore.CYAN)
     print_wrapped("Type 'quit' at any time to exit the game.", Fore.YELLOW)
     print_wrapped("Type 'debug' to toggle debug information.", Fore.YELLOW)
+    
+    if DEBUG:
+        print_wrapped("Debug mode is enabled. Type 'debug' to disable it.", Fore.MAGENTA)
+        print_wrapped(f"Using API endpoint: {API_URL}", Fore.MAGENTA)
+    
     print_wrapped("\nGenerating your adventure...", Fore.GREEN)
     
     scenario = generate_scenario()
