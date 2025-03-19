@@ -27,17 +27,17 @@ class SimpleAdventureGame:
         3. Keep your responses under 200 words
         
         During your response, you please wrap all key words in game tags to affect the state of the game.
-        - <addItem>item name</addItem> - Add an item to inventory
-        - <removeItem>item name</removeItem> - Remove an item from inventory
-        - <setLocation>location name</setLocation> - Change the player's location
-        - <addStatus>status name</addStatus> - Add a status effect
-        - <removeStatus>status name</removeStatus> - Remove a status effect
+        - <takeItem>item name</takeItem> - Add an item to inventory
+        - <discardItem>item name</discardItem> - Remove an item from inventory
+        - <goToLocation>location name</goToLocation> - Change the player's location
+        - <aquireStatus>status name</aquireStatus> - Add a status effect
+        - <dispellStatus>status name</dispellStatus> - Remove a status effect
         """
 
         final_reminder = """
         Remember to keep using game tags, including items, location and status!
         These are the valid tags:
-            addItem, removeItem, setLocation, addStatus, removeStatus
+            takeItem, discardItem, goToLocation, aquireStatus, dispellStatus
         Any other tags aren't real and serve no purpose.
         """
         
@@ -98,14 +98,14 @@ class SimpleAdventureGame:
     def _update_game_state(self, response: str):
         """Update the game state based on XML commands in the response."""
         # Look for inventory additions
-        add_items = re.findall(r'<addItem>(.*?)</addItem>', response, re.DOTALL)
+        add_items = re.findall(r'<takeItem>(.*?)</takeItem>', response, re.DOTALL)
         for item in add_items:
             item = item.strip()
             if item and item not in self.game_state["inventory"]:
                 self.game_state["inventory"].append(item)
         
         # Look for inventory removals
-        remove_items = re.findall(r'<removeItem>(.*?)</removeItem>', response, re.DOTALL)
+        remove_items = re.findall(r'<discardItem>(.*?)</discardItem>', response, re.DOTALL)
         for item in remove_items:
             item = item.strip()
             if item:
@@ -116,19 +116,19 @@ class SimpleAdventureGame:
                         break
         
         # Look for location changes
-        location_changes = re.findall(r'<setLocation>(.*?)</setLocation>', response, re.DOTALL)
+        location_changes = re.findall(r'<goToLocation>(.*?)</goToLocation>', response, re.DOTALL)
         if location_changes:
             self.game_state["location"] = location_changes[-1].strip()
         
         # Look for status effect additions
-        add_effects = re.findall(r'<addStatus>(.*?)</addStatus>', response, re.DOTALL)
+        add_effects = re.findall(r'<aquireStatus>(.*?)</aquireStatus>', response, re.DOTALL)
         for effect in add_effects:
             effect = effect.strip()
             if effect and effect not in self.game_state["status_effects"]:
                 self.game_state["status_effects"].append(effect)
         
         # Look for status effect removals
-        remove_effects = re.findall(r'<removeStatus>(.*?)</removeStatus>', response, re.DOTALL)
+        remove_effects = re.findall(r'<dispellStatus>(.*?)</dispellStatus>', response, re.DOTALL)
         for effect in remove_effects:
             effect = effect.strip()
             if effect and effect in self.game_state["status_effects"]:
@@ -155,11 +155,11 @@ class SimpleAdventureGame:
         
         During your response, you please wrap all key words in these game tags to affect the state of the game.
         They should be used whenever appropriate in the course of your natural response.
-        - <addItem>item name</addItem> - Add an item to inventory
-        - <removeItem>item name</removeItem> - Remove an item from inventory
-        - <setLocation>location name</setLocation> - Change the player's location
-        - <addStatus>status name</addStatus> - Add a status effect
-        - <removeStatus>status name</removeStatus> - Remove a status effect
+        - <takeItem>item name</takeItem> - Add an item to inventory
+        - <discardItem>item name</discardItem> - Remove an item from inventory
+        - <goToLocation>location name</goToLocation> - Change the player's location
+        - <aquireStatus>status name</aquireStatus> - Add a status effect
+        - <dispellStatus>status name</dispellStatus> - Remove a status effect
         
         SCENARIO: {scenario}
         
@@ -169,7 +169,7 @@ class SimpleAdventureGame:
         3. Specifying any starting status effects (who or what they are should also be considered a status)
         Remember to keep using game tags, including items, location and status!
         These are the valid tags:
-            addItem, removeItem, setLocation, addStatus, removeStatus
+            takeItem, discardItem, goToLocation, aquireStatus, dispellStatus
         Any other tags aren't real and serve no purpose.
         """
         
