@@ -43,7 +43,7 @@ gemini_client = None
 if args.model == "gemini":
     if not gemini_available:
         print("Error: Gemini API selected but required packages are not installed.")
-        print("Please install with: pip install google-generativeai")
+        print("Please install with: pip install google-genai")
         exit(1)
     
     api_key = os.environ.get("GEMINI_API_KEY")
@@ -84,12 +84,12 @@ def print_debug(title, content, color=Fore.MAGENTA):
 def call_gemini(prompt, temperature=0.7, max_tokens=8192):
     """Call the Gemini API with the given prompt."""
     try:
-        if DEBUG:
-            print_debug("Gemini API Request", {
-                "model": args.gemini_model,
-                "temperature": temperature,
-                "prompt": prompt
-            })
+        # if DEBUG:
+        #     print_debug("Gemini API Request", {
+        #         "model": args.gemini_model,
+        #         "temperature": temperature,
+        #         "prompt": prompt
+        #     })
         
         contents = [
             types.Content(
@@ -116,8 +116,8 @@ def call_gemini(prompt, temperature=0.7, max_tokens=8192):
         
         result = response.text
         
-        if DEBUG:
-            print_debug("Gemini API Response", result, Fore.GREEN)
+        # if DEBUG:
+        #     print_debug("Gemini API Response", result, Fore.GREEN)
             
         return result
     except Exception as e:
@@ -188,6 +188,8 @@ The game state should be in JSON format with the following structure:
 
 {
   "gameStatus": "playing", // Can be "playing", "win", or "lose"
+  "date": "current-date",
+  "time": "current-time",
   "objective": "Description of the win objective",
   "playerCharacter": {
     "beingType": "human/animal/etc",
@@ -242,6 +244,7 @@ def generate_scenario():
     As the narrator of this text adventure game, describe what happens next.
 
     Create an interesting starting scenario with the following:
+    0. What is the date and time
     1. Who/what the player is (could be a normal person, a wizard, a talking animal, etc.)
     2. Where they are starting their adventure
     3. What items they have in their inventory (2-4 items)
@@ -336,6 +339,10 @@ def update_game_state(current_state, player_request, narrator_response):
     
     Update the JSON game state to reflect any changes that occurred in the narrator's response, you can consider the player's requested action as well
     but only if the narrator has allowed for it:
+
+    0. TIME CHANGES:
+       - Track any changes to the time or date from the narration
+       - Time must always pass, however slight, even in seconds is fine, but it must be a later time than before
     
     1. LOCATION CHANGES:
        - If the player moved to a new location, update the current location, mark that location as explored
@@ -347,11 +354,11 @@ def update_game_state(current_state, player_request, narrator_response):
        - Add items that were picked up
        - Remove items that were used or lost
     
-    3. STATUS CHANGES:
+    3. STATUS CHANGES: 
        - Add or remove status effects based on what happened, this could be the stance of the player, the condition of their body or clothes,
-       or their involuntary emotions or gut reactions
+       or their involuntary emotions or gut reactions, any meaningful knowledge is also considered a status
+       - An added status must have the current time and date attached to it
        - If a status effect was expired already, you can remove it
-       - If a status persists, add to its timeSinceApplied attribute
        - If it's been long enough, set the status effect as expired, if this is reasonable
 
     4. CHARACTER CHANGES:
@@ -425,6 +432,7 @@ def get_narrator_response(current_state, player_action, last_response=None):
     If the player tries to do something impossible, gently explain why it can't be done.
     If the player achieves their objective, make it clear they've won the game!
     If the player does something that would result in death or being permanently trapped, describe it dramatically.
+    Make the player aware of any passage of time.
 
     Please keep your response to 1 or 2 sentences. Use simple common american english.
     """
