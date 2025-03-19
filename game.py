@@ -1,7 +1,7 @@
 import re
 import json
-from typing import List, Dict, Any, Optional
 import requests
+import time
 
 class SimpleAdventureGame:
     def __init__(self, model_url: str = "http://localhost:1234/v1"):
@@ -11,13 +11,26 @@ class SimpleAdventureGame:
             "location": "starting_point",
             "status_effects": []
         }
-        self.conversation_history = []
+        self.story_so_far = ""  # We'll use this instead of conversation history
         
     def query_llm(self, prompt: str) -> str:
         """Send a prompt to the local LLM and get a response."""
         headers = {"Content-Type": "application/json"}
         
-        # Include game state in the prompt
+        # Include game state and story so far in the prompt
+        system_instructions = """
+        You are the narrator of a silly choose-your-own-adventure game.
+        Keep the tone light and humorous. Respond to player actions in a way that makes sense.
+        Keep your responses concise (under 300 words).
+        
+        To manage the game state, use these special commands in your response:
+        - [ADD_ITEM: item name] - Add an item to the player's inventory
+        - [REMOVE_ITEM: item name] - Remove an item from the player's inventory
+        - [SET_LOCATION: location name] - Set the player's current location
+        - [ADD_STATUS: status effect] - Add a status effect to the player
+        - [REMOVE_STATUS: status effect] - Remove a status effect from the player
+        """
+        
         game_state_str = (
             f"CURRENT GAME STATE:\n"
             f"Location: {self.game_state['location']}\n"
@@ -25,36 +38,65 @@ class SimpleAdventureGame:
             f"Status Effects: {', '.join(self.game_state['status_effects']) if self.game_state['status_effects'] else 'none'}\n\n"
         )
         
-        full_prompt = game_state_str + prompt
+        # Include a condensed version of the story so far
+        story_context = ""
+        if self.story_so_far:
+            story_context = f"STORY SO FAR:\n{self.story_so_far}\n\n"
         
-        # Prepare the messages including conversation history
-        messages = self.conversation_history + [{"role": "user", "content": full_prompt}]
+        full_prompt = f"{system_instructions}\n\n{game_state_str}{story_context}PLAYER ACTION: {prompt}\n\nNARRATOR RESPONSE:"
+        
+        # Simple message structure with just one user message
+        messages = [{"role": "user", "content": full_prompt}]
         
         payload = {
-            "model": "local-model",  # Adjust based on your LM Studio setup
+            "model": "local-model",
             "messages": messages,
             "temperature": 0.7,
-            "max_tokens": 1000
+            "max_tokens": 800
         }
         
-        try:
-            response = requests.post(f"{self.model_url}/chat/completions", 
-                                    headers=headers, 
-                                    json=payload)
-            response.raise_for_status()
-            response_text = response.json()["choices"][0]["message"]["content"]
-            
-            # Add to conversation history
-            self.conversation_history.append({"role": "assistant", "content": response_text})
-            
-            # Parse the response for game state changes
-            self._parse_game_state_changes(response_text)
-            
-            # Return the cleaned response (without any state change commands)
-            return self._clean_response(response_text)
-        except Exception as e:
-            print(f"Error querying LLM: {e}")
-            return "Sorry, I encountered an error processing your request."
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                response = requests.post(
+                    f"{self.model_url}/chat/completions", 
+                    headers=headers, 
+                    json=payload,
+                    timeout=4 * 60
+                )
+                
+                if response.status_code == 200:
+                    response_text = response.json()["choices"][0]["message"]["content"]
+                    
+                    # Parse the response for game state changes
+                    self._parse_game_state_changes(response_text)
+                    
+                    # Clean the response
+                    cleaned_response = self._clean_response(response_text)
+                    
+                    # Update the story so far (keep it manageable)
+                    if len(self.story_so_far) > 1000:  # Limit to ~1000 chars
+                        self.story_so_far = self.story_so_far[-500:]  # Keep the last 500 chars
+                    
+                    # Add a summary of this exchange to the story
+                    self.story_so_far += f"Player: {prompt}\nNarrator: {cleaned_response[:100]}...\n"
+                    
+                    return cleaned_response
+                else:
+                    print(f"Error status code: {response.status_code}")
+                    print(f"Response content: {response.text}")
+                    retry_count += 1
+                    time.sleep(1)
+                    
+            except Exception as e:
+                print(f"Error querying LLM (attempt {retry_count+1}/{max_retries}): {e}")
+                retry_count += 1
+                time.sleep(1)
+        
+        # If we get here, all retries failed
+        return "Sorry, I encountered an error processing your request. Let's continue our adventure. What would you like to do next?"
     
     def _parse_game_state_changes(self, response: str):
         """Parse the response for game state changes."""
@@ -98,50 +140,30 @@ class SimpleAdventureGame:
     
     def start_game(self, scenario: str):
         """Start a new game with the given scenario."""
-        self.conversation_history = [
-            {"role": "system", "content": """
-            You are the narrator of a silly choose-your-own-adventure game. 
-            Your job is to create a fun, engaging, and slightly absurd adventure based on the scenario.
-            
-            Rules:
-            1. Keep the tone light and humorous
-            2. Maintain consistency in the story world
-            3. Respond to player actions in a way that makes sense
-            4. Keep players on-subject and only allow actions that make sense in the scenario
-            5. Describe the scene vividly and give the player clear options
-            
-            To manage the game state, use these special commands in your response:
-            - [ADD_ITEM: item name] - Add an item to the player's inventory
-            - [REMOVE_ITEM: item name] - Remove an item from the player's inventory
-            - [SET_LOCATION: location name] - Set the player's current location
-            - [ADD_STATUS: status effect] - Add a status effect to the player
-            - [REMOVE_STATUS: status effect] - Remove a status effect from the player
-            
-            When starting a new game, always set up the initial inventory with 3-5 items (some useful, some silly),
-            set the initial location, and any starting status effects.
-            
-            Example of starting a game:
-            [SET_LOCATION: Ant Colony Entrance]
-            [ADD_ITEM: Tiny Wand]
-            [ADD_ITEM: Dirt Cloak]
-            [ADD_ITEM: Half-eaten Leaf]
-            [ADD_STATUS: Magically Aware]
-            
-            You find yourself at the entrance of a massive ant colony. As a small worm, the towering dirt walls seem to stretch endlessly above you...
-            
-            These commands will be removed before showing the response to the player.
-            """}
-        ]
-        
         # Reset game state
         self.game_state = {
             "inventory": [],
             "location": "starting_point",
             "status_effects": []
         }
+        self.story_so_far = ""
         
         # Start the game with the given scenario
-        return self.query_llm(f"Start a new adventure with this scenario: {scenario}")
+        start_prompt = f"""
+        You are starting a new silly choose-your-own-adventure game with this scenario:
+        
+        {scenario}
+        
+        Begin by setting up the initial game state:
+        1. Set the starting location using [SET_LOCATION: location name]
+        2. Add 3-5 items to the player's inventory (mix of useful and silly items) using [ADD_ITEM: item name]
+        3. Add any starting status effects using [ADD_STATUS: status effect]
+        
+        Then describe the opening scene vividly and give the player 2-3 clear options for what to do next.
+        Keep your response under 300 words and make it fun and engaging!
+        """
+        
+        return self.query_llm(start_prompt)
     
     def player_action(self, action: str) -> str:
         """Process a player's action and return the narrator's response."""
@@ -158,9 +180,11 @@ def main():
     Give the player a starting inventory with some useful items and some silly ones.
     """
     
+    print("Starting your adventure... (this may take a moment)")
+    
     # Start the game
     response = game.start_game(scenario)
-    print("Narrator:", response)
+    print("\nNarrator:", response)
     print("\nCurrent Game State:")
     print(f"Location: {game.game_state['location']}")
     print(f"Inventory: {', '.join(game.game_state['inventory'])}")
@@ -172,7 +196,8 @@ def main():
         
         if player_input.lower() in ['quit', 'exit']:
             break
-            
+        
+        print("Thinking...")
         response = game.player_action(player_input)
         print("\nNarrator:", response)
         print("\nCurrent Game State:")
