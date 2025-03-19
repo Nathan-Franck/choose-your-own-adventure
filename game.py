@@ -5,6 +5,16 @@ import os
 import textwrap
 import argparse
 from colorama import Fore, Style, init
+import base64
+
+# Optional Gemini imports - will be imported only if needed
+gemini_available = False
+try:
+    from google import genai
+    from google.genai import types
+    gemini_available = True
+except ImportError:
+    pass
 
 # Initialize colorama for cross-platform colored terminal output
 init()
@@ -14,6 +24,12 @@ parser = argparse.ArgumentParser(description='Local Adventure Game')
 parser.add_argument('--debug', '-d', action='store_true', help='Enable debug mode')
 parser.add_argument('--api', type=str, default="http://192.168.1.74:1234/v1", 
                     help='LM Studio API base URL')
+parser.add_argument('--model', type=str, default="local", 
+                    choices=["local", "gemini"], help='Model to use: local or gemini')
+parser.add_argument('--gemini-model', type=str, default="gemini-2.0-flash",
+                    help='Gemini model to use (if --model=gemini)')
+parser.add_argument('--temperature', type=float, default=0.7,
+                    help='Temperature for generation')
 args = parser.parse_args()
 
 # LM Studio API endpoint
@@ -21,6 +37,21 @@ API_URL = f"{args.api}/chat/completions"
 
 # Debug flag - can be set via command line or toggled in-game
 DEBUG = args.debug
+
+# Initialize Gemini client if selected
+gemini_client = None
+if args.model == "gemini":
+    if not gemini_available:
+        print("Error: Gemini API selected but required packages are not installed.")
+        print("Please install with: pip install google-generativeai")
+        exit(1)
+    
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("Error: GEMINI_API_KEY environment variable not set.")
+        exit(1)
+    
+    gemini_client = genai.Client(api_key=api_key)
 
 def clear_screen():
     """Clear the terminal screen."""
@@ -50,11 +81,55 @@ def print_debug(title, content, color=Fore.MAGENTA):
             
         print("="*80 + "\n")
 
-def call_llm(messages, temperature=0.7, max_tokens=1024):
+def call_gemini(prompt, temperature=0.7, max_tokens=8192):
+    """Call the Gemini API with the given prompt."""
+    try:
+        if DEBUG:
+            print_debug("Gemini API Request", {
+                "model": args.gemini_model,
+                "temperature": temperature,
+                "prompt": prompt
+            })
+        
+        contents = [
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_text(text=prompt),
+                ],
+            ),
+        ]
+        
+        generate_content_config = types.GenerateContentConfig(
+            temperature=temperature,
+            top_p=0.95,
+            top_k=40,
+            max_output_tokens=max_tokens,
+            response_mime_type="text/plain",
+        )
+
+        response = gemini_client.models.generate_content(
+            model=args.gemini_model,
+            contents=contents,
+            config=generate_content_config,
+        )
+        
+        result = response.text
+        
+        if DEBUG:
+            print_debug("Gemini API Response", result, Fore.GREEN)
+            
+        return result
+    except Exception as e:
+        print_debug("Gemini API Error", str(e), Fore.RED)
+        print_wrapped(f"Error calling Gemini API: {e}", Fore.RED)
+        return None
+
+def call_local_llm(messages, temperature=0.7, max_tokens=1024):
     """Call the LM Studio API with the given messages."""
     try:
         if DEBUG:
-            print_debug("API Request", {
+            print_debug("LM Studio API Request", {
                 "temperature": temperature,
                 "messages": messages
             })
@@ -73,13 +148,39 @@ def call_llm(messages, temperature=0.7, max_tokens=1024):
         result = response.json()["choices"][0]["message"]["content"]
         
         if DEBUG:
-            print_debug("API Response", result, Fore.GREEN)
+            print_debug("LM Studio API Response", result, Fore.GREEN)
             
         return result
     except requests.exceptions.RequestException as e:
-        print_debug("API Error", str(e), Fore.RED)
+        print_debug("LM Studio API Error", str(e), Fore.RED)
         print_wrapped(f"Error calling LM Studio API: {e}", Fore.RED)
         return None
+
+def call_llm(messages, temperature=None, max_tokens=None):
+    """Call the selected LLM API with the given messages."""
+    # Use provided temperature or default from args
+    temp = temperature if temperature is not None else args.temperature
+    
+    if args.model == "gemini":
+        # For Gemini, convert the messages to a single prompt
+        prompt = ""
+        for msg in messages:
+            role = msg["role"]
+            content = msg["content"]
+            if role == "user":
+                prompt += f"User: {content}\n\n"
+            elif role == "assistant":
+                prompt += f"Assistant: {content}\n\n"
+            else:
+                prompt += f"{role}: {content}\n\n"
+        
+        # Default max tokens for Gemini
+        tokens = max_tokens if max_tokens is not None else 8192
+        return call_gemini(prompt, temperature=temp, max_tokens=tokens)
+    else:
+        # Default max tokens for local LLM
+        tokens = max_tokens if max_tokens is not None else 1024
+        return call_local_llm(messages, temperature=temp, max_tokens=tokens)
 
 # Game state specification - centralized for reuse
 STATE_SPEC = """
@@ -363,7 +464,10 @@ def main():
     
     if DEBUG:
         print_wrapped("Debug mode is enabled. Type 'debug' to disable it.", Fore.MAGENTA)
-        print_wrapped(f"Using API endpoint: {API_URL}", Fore.MAGENTA)
+        if args.model == "gemini":
+            print_wrapped(f"Using Gemini API with model: {args.gemini_model}", Fore.MAGENTA)
+        else:
+            print_wrapped(f"Using LM Studio API endpoint: {API_URL}", Fore.MAGENTA)
     
     def start_game():
         print_wrapped("\nGenerating your adventure...", Fore.GREEN)
