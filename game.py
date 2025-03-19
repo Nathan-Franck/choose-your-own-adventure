@@ -6,12 +6,14 @@ import textwrap
 import argparse
 from colorama import Fore, Style, init
 import base64
+import traceback
 
 # Optional Gemini imports - will be imported only if needed
 gemini_available = False
 try:
     from google import genai
     from google.genai import types
+
     gemini_available = True
 except ImportError:
     pass
@@ -20,16 +22,37 @@ except ImportError:
 init()
 
 # Parse command line arguments
-parser = argparse.ArgumentParser(description='Local Adventure Game')
-parser.add_argument('--debug', '-d', action='store_true', help='Enable debug mode')
-parser.add_argument('--api', type=str, default="http://192.168.1.74:1234/v1", 
-                    help='LM Studio API base URL')
-parser.add_argument('--model', type=str, default="local", 
-                    choices=["local", "gemini"], help='Model to use: local or gemini')
-parser.add_argument('--gemini-model', type=str, default="gemini-2.0-flash",
-                    help='Gemini model to use (if --model=gemini)')
-parser.add_argument('--temperature', type=float, default=0.7,
-                    help='Temperature for generation')
+parser = argparse.ArgumentParser(description="Local Adventure Game")
+parser.add_argument(
+    "--debug", "-d", action="store_true", help="Enable debug mode"
+)
+parser.add_argument(
+    "--api",
+    type=str,
+    default="http://192.168.1.74:1234/v1",
+    help="LM Studio API base URL",
+)
+parser.add_argument(
+    "--model",
+    type=str,
+    default="local",
+    choices=["local", "gemini"],
+    help="Model to use: local or gemini",
+)
+parser.add_argument(
+    "--gemini-model",
+    type=str,
+    default="gemini-2.0-flash",
+    help="Gemini model to use (if --model=gemini)",
+)
+parser.add_argument(
+    "--temperature", type=float, default=0.7, help="Temperature for generation"
+)
+parser.add_argument(
+    "--restore",
+    type=str,
+    help="Path to a saved game state file to restore from.",
+)
 args = parser.parse_args()
 
 # LM Studio API endpoint
@@ -45,17 +68,19 @@ if args.model == "gemini":
         print("Error: Gemini API selected but required packages are not installed.")
         print("Please install with: pip install google-genai")
         exit(1)
-    
+
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         print("Error: GEMINI_API_KEY environment variable not set.")
         exit(1)
-    
+
     gemini_client = genai.Client(api_key=api_key)
+
 
 def clear_screen():
     """Clear the terminal screen."""
-    os.system('cls' if os.name == 'nt' else 'clear')
+    os.system("cls" if os.name == "nt" else "clear")
+
 
 def print_wrapped(text, color=None):
     """Print text with word wrapping and optional color."""
@@ -65,21 +90,23 @@ def print_wrapped(text, color=None):
     else:
         print(wrapped_text)
 
+
 def print_debug(title, content, color=Fore.MAGENTA):
     """Print debug information with formatting."""
     if DEBUG:
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print_wrapped(f"{color}[DEBUG] {title}{Style.RESET_ALL}", color)
-        print("-"*80)
-        
+        print("-" * 80)
+
         # Format content based on type
         if isinstance(content, dict) or isinstance(content, list):
             formatted_content = json.dumps(content, indent=2)
             print(formatted_content)
         else:
             print(content)
-            
-        print("="*80 + "\n")
+
+        print("=" * 80 + "\n")
+
 
 def call_gemini(prompt, temperature=0.7, max_tokens=8192):
     """Call the Gemini API with the given prompt."""
@@ -90,7 +117,7 @@ def call_gemini(prompt, temperature=0.7, max_tokens=8192):
         #         "temperature": temperature,
         #         "prompt": prompt
         #     })
-        
+
         contents = [
             types.Content(
                 role="user",
@@ -99,7 +126,7 @@ def call_gemini(prompt, temperature=0.7, max_tokens=8192):
                 ],
             ),
         ]
-        
+
         generate_content_config = types.GenerateContentConfig(
             temperature=temperature,
             top_p=0.95,
@@ -113,54 +140,56 @@ def call_gemini(prompt, temperature=0.7, max_tokens=8192):
             contents=contents,
             config=generate_content_config,
         )
-        
+
         result = response.text
-        
+
         # if DEBUG:
         #     print_debug("Gemini API Response", result, Fore.GREEN)
-            
+
         return result
     except Exception as e:
         print_debug("Gemini API Error", str(e), Fore.RED)
         print_wrapped(f"Error calling Gemini API: {e}", Fore.RED)
         return None
 
+
 def call_local_llm(messages, temperature=0.7, max_tokens=1024):
     """Call the LM Studio API with the given messages."""
     try:
         if DEBUG:
-            print_debug("LM Studio API Request", {
-                "temperature": temperature,
-                "messages": messages
-            })
-        
+            print_debug(
+                "LM Studio API Request",
+                {"temperature": temperature, "messages": messages},
+            )
+
         response = requests.post(
             API_URL,
             json={
                 "messages": messages,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
-                "stream": False
+                "stream": False,
             },
-            timeout=60
+            timeout=60,
         )
         response.raise_for_status()
         result = response.json()["choices"][0]["message"]["content"]
-        
+
         if DEBUG:
             print_debug("LM Studio API Response", result, Fore.GREEN)
-            
+
         return result
     except requests.exceptions.RequestException as e:
         print_debug("LM Studio API Error", str(e), Fore.RED)
         print_wrapped(f"Error calling LM Studio API: {e}", Fore.RED)
         return None
 
+
 def call_llm(messages, temperature=None, max_tokens=None):
     """Call the selected LLM API with the given messages."""
     # Use provided temperature or default from args
     temp = temperature if temperature is not None else args.temperature
-    
+
     if args.model == "gemini":
         # For Gemini, convert the messages to a single prompt
         prompt = ""
@@ -173,14 +202,24 @@ def call_llm(messages, temperature=None, max_tokens=None):
                 prompt += f"Assistant: {content}\n\n"
             else:
                 prompt += f"{role}: {content}\n\n"
-        
+
         # Default max tokens for Gemini
         tokens = max_tokens if max_tokens is not None else 8192
-        return call_gemini(prompt, temperature=temp, max_tokens=tokens)
+        response = call_gemini(prompt, temperature=temp, max_tokens=tokens)
+        if response is None:
+            print_wrapped(
+                "Gemini API failed, falling back to local model.", Fore.RED
+            )
+            args.model = "local"  # Switch to local model
+            return call_local_llm(
+                messages, temperature=temp, max_tokens=tokens
+            )  # Call local model
+        return response
     else:
         # Default max tokens for local LLM
         tokens = max_tokens if max_tokens is not None else 1024
         return call_local_llm(messages, temperature=temp, max_tokens=tokens)
+
 
 # Game state specification - centralized for reuse
 STATE_SPEC = """
@@ -240,9 +279,9 @@ The game state should be in JSON format with the following structure:
 
 THEMING = """
     Be creative, and engaging. Keep your response to at most 3 sentences, and use simple language that someone learning english would understand.
-    This is a heroic adventure in a grounded high-fantasy medieval world, we should feel in-control and well-supplied.
-    Don't be too verbose, just a short paragraph. Use words a 4 year old would understand.
+    It has talking animals in it, and it's fit for a 4 year old.
 """
+
 
 def generate_scenario():
     """Generate the initial game scenario with a win objective."""
@@ -260,10 +299,11 @@ def generate_scenario():
     {THEMING}
     Clearly state the win objective at the end.
     """
-    
+
     messages = [{"role": "user", "content": scenario_prompt}]
     scenario = call_llm(messages, temperature=0.9)
     return scenario
+
 
 def initialize_game_state(scenario):
     """Initialize the JSON game state based on the scenario."""
@@ -275,12 +315,12 @@ def initialize_game_state(scenario):
             "beingType": "none",
             "location": "none",
             "inventory": [],
-            "statusEffects": []
+            "statusEffects": [],
         },
         "characters": [],
-        "locations": []
+        "locations": [],
     }
-    
+
     # Extract information from scenario using the state aggregator
     state_prompt = f"""
     Based on this initial scenario description:
@@ -301,14 +341,14 @@ def initialize_game_state(scenario):
     
     Return ONLY the updated JSON, nothing else.
     """
-    
+
     messages = [{"role": "user", "content": state_prompt}]
     json_response = call_llm(messages, temperature=0.2)
-    
+
     # Extract JSON from response
     try:
         # Try to find a JSON object in the response
-        json_match = re.search(r'({[\s\S]*})', json_response)
+        json_match = re.search(r"({[\s\S]*})", json_response)
         if json_match:
             json_str = json_match.group(1)
             game_state = json.loads(json_str)
@@ -323,8 +363,13 @@ def initialize_game_state(scenario):
             return game_state
     except json.JSONDecodeError as e:
         # Fallback if JSON extraction fails
-        print_debug("JSON Extraction Failed", f"Error: {str(e)}\nResponse: {json_response}", Fore.RED)
+        print_debug(
+            "JSON Extraction Failed",
+            f"Error: {str(e)}\nResponse: {json_response}",
+            Fore.RED,
+        )
         return base_state
+
 
 def update_game_state(current_state, player_request, narrator_response):
     """Update the game state based on the narrator's response."""
@@ -379,14 +424,20 @@ def update_game_state(current_state, player_request, narrator_response):
     
     Return ONLY the updated JSON, nothing else.
     """
-    
+
     messages = [{"role": "user", "content": state_prompt}]
     json_response = call_llm(messages, temperature=0.2)
-    
+
     # Extract JSON from response
     try:
         # Try to find a JSON object in the response
-        json_match = re.search(r'({[\s\S]*})', json_response)
+        if json_response is None:
+            print_wrapped(
+                "LLM returned None, using previous game state.", Fore.RED
+            )
+            return current_state
+
+        json_match = re.search(r"({[\s\S]*})", json_response)
         if json_match:
             json_str = json_match.group(1)
             updated_state = json.loads(json_str)
@@ -401,22 +452,30 @@ def update_game_state(current_state, player_request, narrator_response):
             return updated_state
     except json.JSONDecodeError as e:
         # Fallback if JSON extraction fails
-        print_debug("JSON Extraction Failed", f"Error: {str(e)}\nResponse: {json_response}", Fore.RED)
+        print_debug(
+            "JSON Extraction Failed",
+            f"Error: {str(e)}\nResponse: {json_response}",
+            Fore.RED,
+        )
         return current_state
+
 
 def get_narrator_response(current_state, player_action, last_response=None):
     """Get the narrator's response to the player's action."""
     # Check game status
     game_status = current_state.get("gameStatus", "playing")
-    
+
     # If game is over, limit the narrator's response
     if game_status in ["win", "lose"]:
-        return f"The game is over. You have {game_status}! Type 'quit' to exit or 'restart' to play again."
-    
+        return (
+            "The game is over. You have {game_status}! Type 'quit' to exit or"
+            " 'restart' to play again."
+        ).format(game_status=game_status)
+
     context = ""
     if last_response:
-        context = f"Your last narration was: \"{last_response}\"\n\n"
-    
+        context = f'Your last narration was: "{last_response}"\n\n'
+
     narrator_prompt = f"""
     {context}The current game state is:
     
@@ -440,24 +499,34 @@ def get_narrator_response(current_state, player_action, last_response=None):
 
     Please keep your response to 1 or 2 sentences. Use simple common american english.
     """
-    
+
     messages = [{"role": "user", "content": narrator_prompt}]
     return call_llm(messages, temperature=0.8)
+
 
 def check_game_over(game_state):
     """Check if the game is over and return appropriate message."""
     try:
         game_status = game_state.get("gameStatus", "playing")
         objective = game_state.get("objective", "Unknown objective")
-        
+
         if game_status == "win":
-            return True, f"CONGRATULATIONS! You've won the game!\nObjective completed: {objective}"
+            return (
+                True,
+                "CONGRATULATIONS! You've won the game!\nObjective completed:"
+                f" {objective}",
+            )
         elif game_status == "lose":
-            return True, f"GAME OVER! You've lost the game.\nUnfulfilled objective: {objective}"
+            return (
+                True,
+                "GAME OVER! You've lost the game.\nUnfulfilled objective:"
+                f" {objective}",
+            )
         else:
             return False, ""
     except:
         return False, ""
+
 
 def toggle_debug():
     """Toggle the debug mode."""
@@ -467,71 +536,136 @@ def toggle_debug():
     print_wrapped(f"\nDebug mode: {status}", Fore.MAGENTA)
     return f"Debug mode toggled {status}"
 
+
+def save_game_state(game_state, filename="game_state.json"):
+    """Saves the game state to a JSON file."""
+    try:
+        with open(filename, "w") as f:
+            json.dump(game_state, f, indent=2)
+        print_wrapped(f"Game state saved to {filename}", Fore.GREEN)
+    except Exception as e:
+        print_wrapped(f"Error saving game state: {e}", Fore.RED)
+
+
+def load_game_state(filename="game_state.json"):
+    """Loads the game state from a JSON file."""
+    try:
+        with open(filename, "r") as f:
+            game_state = json.load(f)
+        print_wrapped(f"Game state loaded from {filename}", Fore.GREEN)
+        return game_state
+    except FileNotFoundError:
+        print_wrapped(
+            "No saved game state found. Starting a new game.", Fore.YELLOW
+        )
+        return None
+    except Exception as e:
+        print_wrapped(f"Error loading game state: {e}", Fore.RED)
+        return None
+
+
 def main():
     clear_screen()
     print_wrapped("Welcome to Local Adventure!", Fore.CYAN)
     print_wrapped("Type 'quit' at any time to exit the game.", Fore.YELLOW)
     print_wrapped("Type 'debug' to toggle debug information.", Fore.YELLOW)
     print_wrapped("Type 'restart' to start a new game.", Fore.YELLOW)
-    
+
     if DEBUG:
-        print_wrapped("Debug mode is enabled. Type 'debug' to disable it.", Fore.MAGENTA)
+        print_wrapped(
+            "Debug mode is enabled. Type 'debug' to disable it.", Fore.MAGENTA
+        )
         if args.model == "gemini":
-            print_wrapped(f"Using Gemini API with model: {args.gemini_model}", Fore.MAGENTA)
+            print_wrapped(
+                f"Using Gemini API with model: {args.gemini_model}",
+                Fore.MAGENTA,
+            )
         else:
-            print_wrapped(f"Using LM Studio API endpoint: {API_URL}", Fore.MAGENTA)
-    
+            print_wrapped(
+                f"Using LM Studio API endpoint: {API_URL}", Fore.MAGENTA
+            )
+
     def start_game():
         print_wrapped("\nGenerating your adventure...", Fore.GREEN)
-        
+
         scenario = generate_scenario()
         game_state = initialize_game_state(scenario)
-        
-        print_wrapped("\n" + "="*80 + "\n", Fore.CYAN)
+
+        print_wrapped("\n" + "=" * 80 + "\n", Fore.CYAN)
         print_wrapped(scenario, Fore.WHITE)
-        print_wrapped("\n" + "="*80 + "\n", Fore.CYAN)
-        
+        print_wrapped("\n" + "=" * 80 + "\n", Fore.CYAN)
+
         return scenario, game_state
-    
+
     # Initialize the game
-    last_response, game_state = start_game()
-    
+    if args.restore:
+        game_state = load_game_state(args.restore)
+        if game_state:
+            last_response = "Game restored from saved state."
+        else:
+            last_response, game_state = start_game()
+    else:
+        game_state = load_game_state()
+        if game_state:
+            last_response = "Game restored from saved state."
+        else:
+            last_response, game_state = start_game()
+
     while True:
         # Check if game is over
         game_over, message = check_game_over(game_state)
         if game_over:
-            print_wrapped("\n" + "="*80 + "\n", Fore.CYAN)
+            print_wrapped("\n" + "=" * 80 + "\n", Fore.CYAN)
             if "won" in message:
                 print_wrapped(message, Fore.GREEN)
             else:
                 print_wrapped(message, Fore.RED)
-            print_wrapped("\n" + "="*80 + "\n", Fore.CYAN)
-            print_wrapped("Type 'restart' to play again or 'quit' to exit.", Fore.YELLOW)
-        
+            print_wrapped("\n" + "=" * 80 + "\n", Fore.CYAN)
+            print_wrapped(
+                "Type 'restart' to play again or 'quit' to exit.", Fore.YELLOW
+            )
+
         print_wrapped("What would you like to do?", Fore.YELLOW)
         player_action = input("> ")
-        
-        if player_action.lower() in ['quit', 'exit', 'q']:
+
+        if player_action.lower() in ["quit", "exit", "q"]:
             print_wrapped("\nThanks for playing!", Fore.CYAN)
             break
-        elif player_action.lower() == 'debug':
+        elif player_action.lower() == "debug":
             message = toggle_debug()
             print_wrapped(message, Fore.MAGENTA)
             continue
-        elif player_action.lower() == 'restart':
+        elif player_action.lower() == "restart":
             print_wrapped("\nRestarting the game...", Fore.GREEN)
             last_response, game_state = start_game()
             continue
-        
+
         print_wrapped("\nThinking...", Fore.GREEN)
-        narrator_response = get_narrator_response(game_state, player_action, last_response)
-        game_state = update_game_state(game_state, player_action, narrator_response)
-        
-        print_wrapped("\n" + "="*80 + "\n", Fore.CYAN)
+        try:
+            narrator_response = get_narrator_response(
+                game_state, player_action, last_response
+            )
+            game_state = update_game_state(
+                game_state, player_action, narrator_response
+            )
+        except Exception as e:
+            print_wrapped(f"An error occurred: {e}", Fore.RED)
+            traceback.print_exc()
+            save_game_state(game_state)  # Save before exiting
+            print_wrapped(
+                "Game state saved due to crash. Please restart with --restore"
+                " game_state.json",
+                Fore.YELLOW,
+            )
+            return  # Exit the game loop
+
+        print_wrapped("\n" + "=" * 80 + "\n", Fore.CYAN)
         print_wrapped(narrator_response, Fore.WHITE)
-        print_wrapped("\n" + "="*80 + "\n", Fore.CYAN)
-        
+        print_wrapped("\n" + "=" * 80 + "\n", Fore.CYAN)
+
         last_response = narrator_response
+        save_game_state(game_state)
+
 
 if __name__ == "__main__":
     main()
