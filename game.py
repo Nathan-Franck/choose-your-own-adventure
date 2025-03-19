@@ -91,7 +91,7 @@ def call_llm(messages, temperature=0.7, max_tokens=1024):
         return None
 
 def generate_scenario():
-    """Generate the initial game scenario."""
+    """Generate the initial game scenario with a win objective."""
     scenario_prompt = """
     You are the creator of a silly, light-hearted text adventure game. 
     Create a fun starting scenario with the following:
@@ -99,8 +99,10 @@ def generate_scenario():
     2. Where they are starting their adventure
     3. What items they have in their inventory (2-4 items)
     4. A brief description of the surroundings and situation
+    5. A clear win objective for the player to achieve (find an item, reach a location, solve a puzzle, etc.)
     
     Make it humorous and whimsical. Don't be too verbose, just a paragraph or two.
+    Clearly state the win objective at the end.
     """
     
     messages = [{"role": "user", "content": scenario_prompt}]
@@ -109,11 +111,21 @@ def generate_scenario():
 
 def initialize_game_state(scenario):
     """Initialize the XML game state based on the scenario."""
-    # Create base XML structure
-    root = ET.Element("game-state")
-    player = ET.SubElement(root, "player-character", {"being-type": "unknown", "location": "unknown"})
-    inventory = ET.SubElement(player, "inventory")
-    status = ET.SubElement(player, "status-effects")
+    # Create base XML structure with new elements
+    base_xml = """
+    <game-state>
+      <objective>Not yet determined</objective>
+      <player-character being-type="none" location="none" game-status="playing">
+        <inventory>
+        </inventory>
+        <status-effects>
+        </status-effects>
+      </player-character>
+      <locations>
+        <!-- Will be populated with discovered locations -->
+      </locations>
+    </game-state>
+    """
     
     # Extract information from scenario using the state aggregator
     state_prompt = f"""
@@ -121,16 +133,24 @@ def initialize_game_state(scenario):
     
     "{scenario}"
     
-    Update this XML game state to reflect the character type, location, and inventory items:
+    Update this XML game state to reflect:
+    1. The win objective
+    2. The character type and starting location
+    3. Inventory items
+    4. The starting location details (description, adjacent locations, any special access rules)
     
-    <game-state>
-    <player-character being-type="none" location="none">
-    <inventory>
-    </inventory>
-    <status-effects>
-    </status-effects>
-    </player-character>
-    </game-state>
+    Here's the template:
+    
+    {base_xml}
+    
+    For the locations section, use this format:
+    <location id="[unique-id]" name="[location-name]" current="true/false">
+      <description>[brief description]</description>
+      <adjacent-locations>
+        <adjacent id="[adjacent-location-id]" name="[adjacent-name]" access-rule="[any special requirement or 'none']" />
+        <!-- More adjacent locations as needed -->
+      </adjacent-locations>
+    </location>
     
     Return ONLY the updated XML, nothing else.
     """
@@ -147,9 +167,8 @@ def initialize_game_state(scenario):
         return xml_result
     else:
         # Fallback if XML extraction fails
-        fallback_xml = ET.tostring(root, encoding='unicode')
-        print_debug("XML Extraction Failed", "Using fallback XML", Fore.RED)
-        return fallback_xml
+        print_debug("XML Extraction Failed", "Using base XML template", Fore.RED)
+        return base_xml.strip()
 
 def update_game_state(current_state, narrator_response):
     """Update the game state based on the narrator's response."""
@@ -163,10 +182,22 @@ def update_game_state(current_state, narrator_response):
     "{narrator_response}"
     
     Update the XML game state to reflect any changes that occurred in the narrator's response:
-    - Changes in location
-    - Items added or removed from inventory
-    - New status effects applied or removed
-    - Any other state changes implied by the narrative
+    
+    1. LOCATION CHANGES:
+       - If the player moved to a new location, update the current location
+       - If a new location was discovered, add it to the locations list
+       - Update adjacent locations if new paths were discovered
+    
+    2. INVENTORY CHANGES:
+       - Add items that were picked up
+       - Remove items that were used or lost
+    
+    3. STATUS CHANGES:
+       - Add or remove status effects based on what happened
+    
+    4. WIN/LOSE CONDITIONS:
+       - Check if the player has achieved the objective. If so, set game-status="win"
+       - If the player died or became permanently trapped, set game-status="lose"
     
     Return ONLY the updated XML, nothing else.
     """
@@ -188,6 +219,17 @@ def update_game_state(current_state, narrator_response):
 
 def get_narrator_response(current_state, player_action, last_response=None):
     """Get the narrator's response to the player's action."""
+    # Parse the XML to check game status
+    try:
+        root = ET.fromstring(current_state)
+        game_status = root.find(".//player-character").get("game-status", "playing")
+    except:
+        game_status = "playing"
+    
+    # If game is over, limit the narrator's response
+    if game_status in ["win", "lose"]:
+        return f"The game is over. You have {game_status}! Type 'quit' to exit or 'restart' to play again."
+    
     context = ""
     if last_response:
         context = f"Your last narration was: \"{last_response}\"\n\n"
@@ -201,17 +243,38 @@ def get_narrator_response(current_state, player_action, last_response=None):
     
     As the narrator of this silly, light-hearted text adventure game, describe what happens next.
     Be creative, humorous, and engaging. Keep your response to 2-3 paragraphs at most.
+    
     Remember that players can:
-    - Move around
+    - Move around between adjacent locations
     - Talk to people and animals
     - Use items from their inventory
     - Interact with the environment
+    
+    If the player tries to do something impossible, gently explain why it can't be done.
+    If the player achieves their objective, make it clear they've won the game!
+    If the player does something that would result in death or being permanently trapped, describe it dramatically.
     
     Don't list options explicitly - let the player decide what to do next naturally.
     """
     
     messages = [{"role": "user", "content": narrator_prompt}]
     return call_llm(messages, temperature=0.8)
+
+def check_game_over(game_state):
+    """Check if the game is over and return appropriate message."""
+    try:
+        root = ET.fromstring(game_state)
+        game_status = root.find(".//player-character").get("game-status", "playing")
+        objective = root.find(".//objective").text
+        
+        if game_status == "win":
+            return True, f"CONGRATULATIONS! You've won the game!\nObjective completed: {objective}"
+        elif game_status == "lose":
+            return True, f"GAME OVER! You've lost the game.\nUnfulfilled objective: {objective}"
+        else:
+            return False, ""
+    except:
+        return False, ""
 
 def toggle_debug():
     """Toggle the debug mode."""
@@ -226,23 +289,39 @@ def main():
     print_wrapped("Welcome to Silly Text Adventure!", Fore.CYAN)
     print_wrapped("Type 'quit' at any time to exit the game.", Fore.YELLOW)
     print_wrapped("Type 'debug' to toggle debug information.", Fore.YELLOW)
+    print_wrapped("Type 'restart' to start a new game.", Fore.YELLOW)
     
     if DEBUG:
         print_wrapped("Debug mode is enabled. Type 'debug' to disable it.", Fore.MAGENTA)
         print_wrapped(f"Using API endpoint: {API_URL}", Fore.MAGENTA)
     
-    print_wrapped("\nGenerating your adventure...", Fore.GREEN)
+    def start_game():
+        print_wrapped("\nGenerating your adventure...", Fore.GREEN)
+        
+        scenario = generate_scenario()
+        game_state = initialize_game_state(scenario)
+        
+        print_wrapped("\n" + "="*80 + "\n", Fore.CYAN)
+        print_wrapped(scenario, Fore.WHITE)
+        print_wrapped("\n" + "="*80 + "\n", Fore.CYAN)
+        
+        return scenario, game_state
     
-    scenario = generate_scenario()
-    game_state = initialize_game_state(scenario)
-    
-    print_wrapped("\n" + "="*80 + "\n", Fore.CYAN)
-    print_wrapped(scenario, Fore.WHITE)
-    print_wrapped("\n" + "="*80 + "\n", Fore.CYAN)
-    
-    last_response = scenario
+    # Initialize the game
+    last_response, game_state = start_game()
     
     while True:
+        # Check if game is over
+        game_over, message = check_game_over(game_state)
+        if game_over:
+            print_wrapped("\n" + "="*80 + "\n", Fore.CYAN)
+            if "won" in message:
+                print_wrapped(message, Fore.GREEN)
+            else:
+                print_wrapped(message, Fore.RED)
+            print_wrapped("\n" + "="*80 + "\n", Fore.CYAN)
+            print_wrapped("Type 'restart' to play again or 'quit' to exit.", Fore.YELLOW)
+        
         print_wrapped("What would you like to do?", Fore.YELLOW)
         player_action = input("> ")
         
@@ -252,6 +331,10 @@ def main():
         elif player_action.lower() == 'debug':
             message = toggle_debug()
             print_wrapped(message, Fore.MAGENTA)
+            continue
+        elif player_action.lower() == 'restart':
+            print_wrapped("\nRestarting the game...", Fore.GREEN)
+            last_response, game_state = start_game()
             continue
         
         print_wrapped("\nThinking...", Fore.GREEN)
