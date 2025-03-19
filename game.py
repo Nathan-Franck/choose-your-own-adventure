@@ -1,9 +1,9 @@
+import re
 import json
-import os
 from typing import List, Dict, Any, Optional
 import requests
 
-class AdventureGame:
+class SimpleAdventureGame:
     def __init__(self, model_url: str = "http://localhost:1234/v1"):
         self.model_url = model_url
         self.game_state = {
@@ -17,112 +17,24 @@ class AdventureGame:
         """Send a prompt to the local LLM and get a response."""
         headers = {"Content-Type": "application/json"}
         
-        # Prepare the messages including conversation history
-        messages = self.conversation_history + [{"role": "user", "content": prompt}]
+        # Include game state in the prompt
+        game_state_str = (
+            f"CURRENT GAME STATE:\n"
+            f"Location: {self.game_state['location']}\n"
+            f"Inventory: {', '.join(self.game_state['inventory']) if self.game_state['inventory'] else 'empty'}\n"
+            f"Status Effects: {', '.join(self.game_state['status_effects']) if self.game_state['status_effects'] else 'none'}\n\n"
+        )
         
-        # Define the available tools/functions the LLM can call
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_inventory",
-                    "description": "Get the current inventory of the player",
-                    "parameters": {"type": "object", "properties": {}}
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "add_to_inventory",
-                    "description": "Add an item to the player's inventory",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "item": {"type": "string", "description": "The item to add"}
-                        },
-                        "required": ["item"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "remove_from_inventory",
-                    "description": "Remove an item from the player's inventory",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "item": {"type": "string", "description": "The item to remove"}
-                        },
-                        "required": ["item"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_location",
-                    "description": "Get the current location of the player",
-                    "parameters": {"type": "object", "properties": {}}
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "set_location",
-                    "description": "Set the current location of the player",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "location": {"type": "string", "description": "The new location"}
-                        },
-                        "required": ["location"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_status_effects",
-                    "description": "Get the current status effects on the player",
-                    "parameters": {"type": "object", "properties": {}}
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "add_status_effect",
-                    "description": "Add a status effect to the player",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "effect": {"type": "string", "description": "The status effect to add"}
-                        },
-                        "required": ["effect"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "remove_status_effect",
-                    "description": "Remove a status effect from the player",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "effect": {"type": "string", "description": "The status effect to remove"}
-                        },
-                        "required": ["effect"]
-                    }
-                }
-            }
-        ]
+        full_prompt = game_state_str + prompt
+        
+        # Prepare the messages including conversation history
+        messages = self.conversation_history + [{"role": "user", "content": full_prompt}]
         
         payload = {
-            "model": "gemma-3-4b-it", # Adjust based on your LM Studio setup
+            "model": "local-model",  # Adjust based on your LM Studio setup
             "messages": messages,
-            "tools": tools,
-            "tool_choice": "auto"
+            "temperature": 0.7,
+            "max_tokens": 1000
         }
         
         try:
@@ -130,82 +42,59 @@ class AdventureGame:
                                     headers=headers, 
                                     json=payload)
             response.raise_for_status()
-            return self._process_response(response.json())
+            response_text = response.json()["choices"][0]["message"]["content"]
+            
+            # Add to conversation history
+            self.conversation_history.append({"role": "assistant", "content": response_text})
+            
+            # Parse the response for game state changes
+            self._parse_game_state_changes(response_text)
+            
+            # Return the cleaned response (without any state change commands)
+            return self._clean_response(response_text)
         except Exception as e:
             print(f"Error querying LLM: {e}")
             return "Sorry, I encountered an error processing your request."
     
-    def _process_response(self, response_data: Dict[str, Any]) -> str:
-        """Process the LLM response, handling any tool calls."""
-        response_message = response_data["choices"][0]["message"]
-        
-        # Add the assistant's message to history
-        self.conversation_history.append({"role": "assistant", "content": response_message.get("content", "")})
-        
-        # Check if there are tool calls to process
-        if "tool_calls" in response_message:
-            for tool_call in response_message["tool_calls"]:
-                function_name = tool_call["function"]["name"]
-                function_args = json.loads(tool_call["function"]["arguments"])
-                
-                # Execute the appropriate function
-                result = self._execute_function(function_name, function_args)
-                
-                # Add the function result to the conversation
-                self.conversation_history.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call["id"],
-                    "name": function_name,
-                    "content": json.dumps(result)
-                })
-            
-            # Get a follow-up response from the LLM with the tool results
-            return self.query_llm("Continue with your response based on the tool results.")
-        
-        return response_message.get("content", "")
-    
-    def _execute_function(self, function_name: str, args: Dict[str, Any]) -> Any:
-        """Execute a function called by the LLM."""
-        if function_name == "get_inventory":
-            return self.game_state["inventory"]
-        
-        elif function_name == "add_to_inventory":
-            item = args.get("item")
-            if item and item not in self.game_state["inventory"]:
+    def _parse_game_state_changes(self, response: str):
+        """Parse the response for game state changes."""
+        # Look for inventory additions
+        add_items = re.findall(r'\[ADD_ITEM: (.*?)\]', response)
+        for item in add_items:
+            if item not in self.game_state["inventory"]:
                 self.game_state["inventory"].append(item)
-            return {"added": item, "inventory": self.game_state["inventory"]}
         
-        elif function_name == "remove_from_inventory":
-            item = args.get("item")
-            if item and item in self.game_state["inventory"]:
+        # Look for inventory removals
+        remove_items = re.findall(r'\[REMOVE_ITEM: (.*?)\]', response)
+        for item in remove_items:
+            if item in self.game_state["inventory"]:
                 self.game_state["inventory"].remove(item)
-            return {"removed": item, "inventory": self.game_state["inventory"]}
         
-        elif function_name == "get_location":
-            return {"location": self.game_state["location"]}
+        # Look for location changes
+        location_changes = re.findall(r'\[SET_LOCATION: (.*?)\]', response)
+        if location_changes:
+            self.game_state["location"] = location_changes[-1]  # Use the last one if multiple
         
-        elif function_name == "set_location":
-            location = args.get("location")
-            if location:
-                self.game_state["location"] = location
-            return {"location": self.game_state["location"]}
-        
-        elif function_name == "get_status_effects":
-            return {"status_effects": self.game_state["status_effects"]}
-        
-        elif function_name == "add_status_effect":
-            effect = args.get("effect")
-            if effect and effect not in self.game_state["status_effects"]:
+        # Look for status effect additions
+        add_effects = re.findall(r'\[ADD_STATUS: (.*?)\]', response)
+        for effect in add_effects:
+            if effect not in self.game_state["status_effects"]:
                 self.game_state["status_effects"].append(effect)
-            return {"added": effect, "status_effects": self.game_state["status_effects"]}
         
-        elif function_name == "remove_status_effect":
-            effect = args.get("effect")
-            if effect and effect in self.game_state["status_effects"]:
+        # Look for status effect removals
+        remove_effects = re.findall(r'\[REMOVE_STATUS: (.*?)\]', response)
+        for effect in remove_effects:
+            if effect in self.game_state["status_effects"]:
                 self.game_state["status_effects"].remove(effect)
-            return {"removed": effect, "status_effects": self.game_state["status_effects"]}
-        
-        return {"error": "Unknown function"}
+    
+    def _clean_response(self, response: str) -> str:
+        """Remove game state change commands from the response."""
+        cleaned = re.sub(r'\[ADD_ITEM: .*?\]', '', response)
+        cleaned = re.sub(r'\[REMOVE_ITEM: .*?\]', '', cleaned)
+        cleaned = re.sub(r'\[SET_LOCATION: .*?\]', '', cleaned)
+        cleaned = re.sub(r'\[ADD_STATUS: .*?\]', '', cleaned)
+        cleaned = re.sub(r'\[REMOVE_STATUS: .*?\]', '', cleaned)
+        return cleaned.strip()
     
     def start_game(self, scenario: str):
         """Start a new game with the given scenario."""
@@ -219,12 +108,28 @@ class AdventureGame:
             2. Maintain consistency in the story world
             3. Respond to player actions in a way that makes sense
             4. Keep players on-subject and only allow actions that make sense in the scenario
-            5. Use the available tools to manage the player's inventory, location, and status effects
-            6. Always initialize the game by setting up the player's starting inventory, location, and any status effects
-            7. Describe the scene vividly and give the player clear options
-            8. If the player checks their inventory, use the get_inventory tool
+            5. Describe the scene vividly and give the player clear options
             
-            When narrating, be creative but maintain the logic of the game world.
+            To manage the game state, use these special commands in your response:
+            - [ADD_ITEM: item name] - Add an item to the player's inventory
+            - [REMOVE_ITEM: item name] - Remove an item from the player's inventory
+            - [SET_LOCATION: location name] - Set the player's current location
+            - [ADD_STATUS: status effect] - Add a status effect to the player
+            - [REMOVE_STATUS: status effect] - Remove a status effect from the player
+            
+            When starting a new game, always set up the initial inventory with 3-5 items (some useful, some silly),
+            set the initial location, and any starting status effects.
+            
+            Example of starting a game:
+            [SET_LOCATION: Ant Colony Entrance]
+            [ADD_ITEM: Tiny Wand]
+            [ADD_ITEM: Dirt Cloak]
+            [ADD_ITEM: Half-eaten Leaf]
+            [ADD_STATUS: Magically Aware]
+            
+            You find yourself at the entrance of a massive ant colony. As a small worm, the towering dirt walls seem to stretch endlessly above you...
+            
+            These commands will be removed before showing the response to the player.
             """}
         ]
         
@@ -244,7 +149,7 @@ class AdventureGame:
 
 def main():
     # Initialize the game
-    game = AdventureGame()
+    game = SimpleAdventureGame()
     
     # Example scenario
     scenario = """
@@ -256,6 +161,10 @@ def main():
     # Start the game
     response = game.start_game(scenario)
     print("Narrator:", response)
+    print("\nCurrent Game State:")
+    print(f"Location: {game.game_state['location']}")
+    print(f"Inventory: {', '.join(game.game_state['inventory'])}")
+    print(f"Status Effects: {', '.join(game.game_state['status_effects'])}")
     
     # Game loop
     while True:
@@ -266,7 +175,10 @@ def main():
             
         response = game.player_action(player_input)
         print("\nNarrator:", response)
+        print("\nCurrent Game State:")
+        print(f"Location: {game.game_state['location']}")
+        print(f"Inventory: {', '.join(game.game_state['inventory'])}")
+        print(f"Status Effects: {', '.join(game.game_state['status_effects'])}")
 
 if __name__ == "__main__":
     main()
-
