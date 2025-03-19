@@ -195,7 +195,7 @@ class SimpleAdventureGame:
 
 def main():
     # Initialize the game
-    game = SimpleAdventureGame()
+    game = SimpleAdventureGame("http://192.168.1.74:1234/v1")
     
     # Example scenario
     scenario = """
