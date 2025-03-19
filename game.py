@@ -3,6 +3,7 @@ import xml.etree.ElementTree as ET
 import re
 import os
 import textwrap
+import json
 from colorama import Fore, Style, init
 
 # Initialize colorama for cross-platform colored terminal output
@@ -10,6 +11,9 @@ init()
 
 # LM Studio API endpoint
 API_URL = "http://192.168.1.74:1234/v1/chat/completions"
+
+# Debug flag - set to True to see game state and prompts
+DEBUG = False
 
 def clear_screen():
     """Clear the terminal screen."""
@@ -23,9 +27,38 @@ def print_wrapped(text, color=None):
     else:
         print(wrapped_text)
 
+def print_debug(title, content, color=Fore.MAGENTA):
+    """Print debug information with formatting."""
+    if DEBUG:
+        print("\n" + "="*40)
+        print_wrapped(f"{color}[DEBUG] {title}{Style.RESET_ALL}", color)
+        print("-"*40)
+        print_wrapped(content, Fore.CYAN)
+        print("="*40 + "\n")
+
+def format_xml(xml_string):
+    """Format XML string for better readability."""
+    try:
+        # Parse the XML string
+        root = ET.fromstring(xml_string)
+        # Convert back to string with pretty formatting
+        from xml.dom import minidom
+        pretty_xml = minidom.parseString(ET.tostring(root)).toprettyxml(indent="  ")
+        # Remove extra blank lines that minidom sometimes adds
+        pretty_xml = '\n'.join([line for line in pretty_xml.split('\n') if line.strip()])
+        return pretty_xml
+    except Exception as e:
+        print_debug("XML Formatting Error", str(e), Fore.RED)
+        return xml_string
+
 def call_llm(messages, temperature=0.7, max_tokens=1024):
     """Call the LM Studio API with the given messages."""
     try:
+        # Print debug info about the request
+        if DEBUG:
+            debug_messages = json.dumps(messages, indent=2)
+            print_debug("API Request", f"Temperature: {temperature}\nMessages:\n{debug_messages}")
+        
         response = requests.post(
             API_URL,
             json={
@@ -37,9 +70,16 @@ def call_llm(messages, temperature=0.7, max_tokens=1024):
             timeout=60
         )
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        result = response.json()["choices"][0]["message"]["content"]
+        
+        # Print debug info about the response
+        if DEBUG:
+            print_debug("API Response", result, Fore.GREEN)
+            
+        return result
     except requests.exceptions.RequestException as e:
-        print(f"Error calling LM Studio API: {e}")
+        print_debug("API Error", str(e), Fore.RED)
+        print_wrapped(f"Error calling LM Studio API: {e}", Fore.RED)
         return None
 
 def generate_scenario():
@@ -93,10 +133,15 @@ def initialize_game_state(scenario):
     # Extract XML from response
     xml_match = re.search(r'<game-state>.*?</game-state>', xml_response, re.DOTALL)
     if xml_match:
-        return xml_match.group(0)
+        xml_result = xml_match.group(0)
+        if DEBUG:
+            print_debug("Initial Game State", format_xml(xml_result), Fore.BLUE)
+        return xml_result
     else:
         # Fallback if XML extraction fails
-        return ET.tostring(root, encoding='unicode')
+        fallback_xml = ET.tostring(root, encoding='unicode')
+        print_debug("XML Extraction Failed", "Using fallback XML", Fore.RED)
+        return fallback_xml
 
 def update_game_state(current_state, narrator_response):
     """Update the game state based on the narrator's response."""
@@ -124,9 +169,13 @@ def update_game_state(current_state, narrator_response):
     # Extract XML from response
     xml_match = re.search(r'<game-state>.*?</game-state>', xml_response, re.DOTALL)
     if xml_match:
-        return xml_match.group(0)
+        xml_result = xml_match.group(0)
+        if DEBUG:
+            print_debug("Updated Game State", format_xml(xml_result), Fore.BLUE)
+        return xml_result
     else:
         # Fallback if XML extraction fails
+        print_debug("XML Extraction Failed", "Keeping previous state", Fore.RED)
         return current_state
 
 def get_narrator_response(current_state, player_action, last_response=None):
@@ -156,12 +205,21 @@ def get_narrator_response(current_state, player_action, last_response=None):
     messages = [{"role": "user", "content": narrator_prompt}]
     return call_llm(messages, temperature=0.8)
 
+def toggle_debug():
+    """Toggle the debug mode."""
+    global DEBUG
+    DEBUG = not DEBUG
+    status = "ON" if DEBUG else "OFF"
+    print_wrapped(f"\nDebug mode: {status}", Fore.MAGENTA)
+    return f"Debug mode toggled {status}"
+
 def main():
     clear_screen()
     print_wrapped("Welcome to Silly Text Adventure!", Fore.CYAN)
-    print_wrapped("Type 'quit' at any time to exit the game.\n", Fore.YELLOW)
+    print_wrapped("Type 'quit' at any time to exit the game.", Fore.YELLOW)
+    print_wrapped("Type 'debug' to toggle debug information.", Fore.YELLOW)
+    print_wrapped("\nGenerating your adventure...", Fore.GREEN)
     
-    print_wrapped("Generating your adventure...", Fore.GREEN)
     scenario = generate_scenario()
     game_state = initialize_game_state(scenario)
     
@@ -178,6 +236,10 @@ def main():
         if player_action.lower() in ['quit', 'exit', 'q']:
             print_wrapped("\nThanks for playing!", Fore.CYAN)
             break
+        elif player_action.lower() == 'debug':
+            message = toggle_debug()
+            print_wrapped(message, Fore.MAGENTA)
+            continue
         
         print_wrapped("\nThinking...", Fore.GREEN)
         narrator_response = get_narrator_response(game_state, player_action, last_response)
