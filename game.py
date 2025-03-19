@@ -11,7 +11,7 @@ from colorama import Fore, Style, init
 init()
 
 # Parse command line arguments
-parser = argparse.ArgumentParser(description='Silly Text Adventure Game')
+parser = argparse.ArgumentParser(description='Local Adventure Game')
 parser.add_argument('--debug', '-d', action='store_true', help='Enable debug mode')
 parser.add_argument('--api', type=str, default="http://192.168.1.74:1234/v1", 
                     help='LM Studio API base URL')
@@ -122,10 +122,10 @@ def format_xml(xml_string):
 def call_llm(messages, temperature=0.7, max_tokens=1024):
     """Call the LM Studio API with the given messages."""
     try:
-        # Print debug info about the request
-        if DEBUG:
-            debug_messages = json.dumps(messages, indent=2)
-            print_debug("API Request", f"Temperature: {temperature}\nMessages:\n{debug_messages}")
+        # # Print debug info about the request
+        # if DEBUG:
+        #     debug_messages = json.dumps(messages, indent=2)
+        #     print_debug("API Request", f"Temperature: {temperature}\nMessages:\n{debug_messages}")
         
         response = requests.post(
             API_URL,
@@ -140,28 +140,58 @@ def call_llm(messages, temperature=0.7, max_tokens=1024):
         response.raise_for_status()
         result = response.json()["choices"][0]["message"]["content"]
         
-        # Print debug info about the response
-        if DEBUG:
-            print_debug("API Response", result, Fore.GREEN)
+        # # Print debug info about the response
+        # if DEBUG:
+        #     print_debug("API Response", result, Fore.GREEN)
             
         return result
     except requests.exceptions.RequestException as e:
         print_debug("API Error", str(e), Fore.RED)
         print_wrapped(f"Error calling LM Studio API: {e}", Fore.RED)
         return None
+    
+state_spec = """
+    For the status effects section, use this format:
+    <status-effect time="[time-since-first-applied]" expired="false/true">
+        [Brief description of status]
+    </status-effect>
+
+    For the locations section, use this format:
+    <location name="[location-name]" explored="false/true">
+      <brief-description>[brief description]</brief-description>
+      <adjacent-locations>
+        <adjacent name="[adjacent-location-name]"/>
+        <!-- More adjacent locations as needed -->
+      </adjacent-locations>
+    </location>
+
+    For the characters section, use this format:
+    <character name="[character-name]" being-type="[being-type]" emotion="[current-emotion]" location="[current-location]">
+        <brief-description></brief-description>
+        <thoughts>
+        </thoughts>
+        <inventory>
+        </inventory>
+        <status-effects>
+        </status-effects>
+    </character>
+"""
 
 def generate_scenario():
     """Generate the initial game scenario with a win objective."""
     scenario_prompt = """
-    You are the creator of a silly, light-hearted text adventure game. 
-    Create a fun starting scenario with the following:
+    As the narrator of this text adventure game, describe what happens next.
+
+    Create an interesting starting scenario with the following:
     1. Who/what the player is (could be a normal person, a wizard, a talking animal, etc.)
     2. Where they are starting their adventure
     3. What items they have in their inventory (2-4 items)
-    4. A brief description of the surroundings and situation
+    4. A brief description of the surroundings and situation, and what other characters are at this location
     5. A clear win objective for the player to achieve (find an item, reach a location, solve a puzzle, etc.)
     
-    Make it humorous and whimsical. Don't be too verbose, just a paragraph or two.
+    Be creative, and engaging. Keep your response to at most 1 short paragraph, and use simple language that someone learning english would understand.
+    We're not trying to be whimsical or goofy, but grounded, like a simple but wise fable.
+    Don't be too verbose, just a short paragraph. Use words a 4 year old would understand.
     Clearly state the win objective at the end.
     """
     
@@ -173,14 +203,17 @@ def initialize_game_state(scenario):
     """Initialize the XML game state based on the scenario."""
     # Create base XML structure with new elements
     base_xml = """
-    <game-state>
+    <game-state game-status="playing">
       <objective>Not yet determined</objective>
-      <player-character being-type="none" location="none" game-status="playing">
+      <player-character being-type="none" location="none">
         <inventory>
         </inventory>
         <status-effects>
         </status-effects>
       </player-character>
+      <characters>
+        <!-- Will be populated with discovered characters -->
+      </characters>
       <locations>
         <!-- Will be populated with discovered locations -->
       </locations>
@@ -197,20 +230,13 @@ def initialize_game_state(scenario):
     1. The win objective
     2. The character type and starting location
     3. Inventory items
-    4. The starting location details (description, adjacent locations, any special access rules)
+    4. The starting location details (description, characters, adjacent locations, any special access rules)
     
     Here's the template:
     
     {base_xml}
     
-    For the locations section, use this format:
-    <location id="[unique-id]" name="[location-name]" current="true/false">
-      <description>[brief description]</description>
-      <adjacent-locations>
-        <adjacent id="[adjacent-location-id]" name="[adjacent-name]" access-rule="[any special requirement or 'none']" />
-        <!-- More adjacent locations as needed -->
-      </adjacent-locations>
-    </location>
+    {state_spec}
     
     Return ONLY the updated XML, nothing else.
     """
@@ -219,7 +245,7 @@ def initialize_game_state(scenario):
     xml_response = call_llm(messages, temperature=0.2)
     
     # Extract XML from response
-    xml_match = re.search(r'<game-state>.*?</game-state>', xml_response, re.DOTALL)
+    xml_match = re.search(r'<game-state.*?</game-state>', xml_response, re.DOTALL)
     if xml_match:
         xml_result = xml_match.group(0)
         if DEBUG:
@@ -230,34 +256,53 @@ def initialize_game_state(scenario):
         print_debug("XML Extraction Failed", "Using base XML template", Fore.RED)
         return base_xml.strip()
 
-def update_game_state(current_state, narrator_response):
+def update_game_state(current_state, player_request, narrator_response):
     """Update the game state based on the narrator's response."""
     state_prompt = f"""
     Given the current game state:
     
     {current_state}
+
+    And the player's requested action:
+
+    {player_request}
     
     And the narrator's latest response:
     
     "{narrator_response}"
     
-    Update the XML game state to reflect any changes that occurred in the narrator's response:
+    Update the XML game state to reflect any changes that occurred in the narrator's response, you can consider the player's requested action as well
+    but only if the narrator has allowed for it:
     
     1. LOCATION CHANGES:
-       - If the player moved to a new location, update the current location
+       - If the player moved to a new location, update the current location, mark that location as explored
        - If a new location was discovered, add it to the locations list
        - Update adjacent locations if new paths were discovered
+       - If a character is at this location, add it to the characters list
     
     2. INVENTORY CHANGES:
        - Add items that were picked up
        - Remove items that were used or lost
     
     3. STATUS CHANGES:
-       - Add or remove status effects based on what happened
+       - Add or remove status effects based on what happened, this could be the stance of the player, the condition of their body or clothes,
+       or their involuntary emotions or gut reactions
+       - If a status effect was expired already, you can remove it
+       - If a status persists, add to its time attribute
+       - If it's been long enough, set the status effect as expired, if this is reasonable
+
+    4. CHARACTER CHANGES:
+        - If the player interacts with a character, update that character's thoughts, inventory, and status-effects
+        - If the character moves somewhere else, update their location, and create or update the location they enter if necessary
     
     4. WIN/LOSE CONDITIONS:
        - Check if the player has achieved the objective. If so, set game-status="win"
        - If the player died or became permanently trapped, set game-status="lose"
+
+    If the narrator provides additional information to anything, feel free to update the existing xml data where appropriate!
+    If the xml format is malformed, fix it, filling in any required missing information with "unknown"
+
+    {state_spec}
     
     Return ONLY the updated XML, nothing else.
     """
@@ -266,7 +311,7 @@ def update_game_state(current_state, narrator_response):
     xml_response = call_llm(messages, temperature=0.2)
     
     # Extract XML from response
-    xml_match = re.search(r'<game-state>.*?</game-state>', xml_response, re.DOTALL)
+    xml_match = re.search(r'<game-state.*?</game-state>', xml_response, re.DOTALL)
     if xml_match:
         xml_result = xml_match.group(0)
         if DEBUG:
@@ -282,7 +327,7 @@ def get_narrator_response(current_state, player_action, last_response=None):
     # Parse the XML to check game status
     try:
         root = ET.fromstring(current_state)
-        game_status = root.find(".//player-character").get("game-status", "playing")
+        game_status = root.find(".//game-state").get("game-status", "playing")
     except:
         game_status = "playing"
     
@@ -301,10 +346,10 @@ def get_narrator_response(current_state, player_action, last_response=None):
     
     The player's action is: "{player_action}"
     
-    As the narrator of this silly, light-hearted text adventure game, describe what happens next.
-    Be creative, humorous, and engaging. Keep your response to 2-3 paragraphs at most.
+    As the narrator of this text adventure game, describe what happens next.
+    Be creative, and engaging. We're not trying to be whimsical or goofy, but grounded, like a simple but wise fable.
     
-    Remember that players can:
+    Remember that the player can:
     - Move around between adjacent locations
     - Talk to people and animals
     - Use items from their inventory
@@ -313,8 +358,8 @@ def get_narrator_response(current_state, player_action, last_response=None):
     If the player tries to do something impossible, gently explain why it can't be done.
     If the player achieves their objective, make it clear they've won the game!
     If the player does something that would result in death or being permanently trapped, describe it dramatically.
-    
-    Don't list options explicitly - let the player decide what to do next naturally.
+
+    Please keep your response to 1 or 2 sentences. Use simple common american english.
     """
     
     messages = [{"role": "user", "content": narrator_prompt}]
@@ -324,7 +369,7 @@ def check_game_over(game_state):
     """Check if the game is over and return appropriate message."""
     try:
         root = ET.fromstring(game_state)
-        game_status = root.find(".//player-character").get("game-status", "playing")
+        game_status = root.find(".//game-state").get("game-status", "playing")
         objective = root.find(".//objective").text
         
         if game_status == "win":
@@ -346,7 +391,7 @@ def toggle_debug():
 
 def main():
     clear_screen()
-    print_wrapped("Welcome to Silly Text Adventure!", Fore.CYAN)
+    print_wrapped("Welcome to Local Adventure!", Fore.CYAN)
     print_wrapped("Type 'quit' at any time to exit the game.", Fore.YELLOW)
     print_wrapped("Type 'debug' to toggle debug information.", Fore.YELLOW)
     print_wrapped("Type 'restart' to start a new game.", Fore.YELLOW)
@@ -399,7 +444,7 @@ def main():
         
         print_wrapped("\nThinking...", Fore.GREEN)
         narrator_response = get_narrator_response(game_state, player_action, last_response)
-        game_state = update_game_state(game_state, narrator_response)
+        game_state = update_game_state(game_state, player_action, narrator_response)
         
         print_wrapped("\n" + "="*80 + "\n", Fore.CYAN)
         print_wrapped(narrator_response, Fore.WHITE)
