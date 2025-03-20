@@ -222,6 +222,7 @@ The game state should be in JSON format with the following structure:
   "time": "current-time",
   "objective": "Description of the win objective",
   "playerCharacter": {
+    "name": "player-name",
     "beingType": "human/animal/etc",
     "location": "current-location-name",
     "inventory": [
@@ -238,7 +239,7 @@ The game state should be in JSON format with the following structure:
       }
     ]
     "possibleActions": [
-        "2/3 word description of an action"
+        "2/4 word description of each interesting and unique action"
     ]
   },
   "characters": [
@@ -263,9 +264,9 @@ The game state should be in JSON format with the following structure:
       "name": "location-name",
       "explored": true/false,
       "description": "brief description",
-      "adjacentLocations": [
-        "adjacent-location-name"
-      ]
+      "adjacentLocations": {
+        "cardinal-direction-or-other-preposition": "adjacent-location-name"
+      }
     }
   ]
 }
@@ -380,6 +381,10 @@ def update_game_state(current_state, player_request, narrator_response):
     Update the JSON game state to reflect any changes that occurred in the narrator's response, you can consider the player's requested action as well
     but only if the narrator has allowed for it:
 
+    -1. PLAYER ACTIONS:
+        - Every time, you must come up with some new possible actions for the character to perform, these actions must be interesting and move the plot forward
+        - Please maintain the list of possible player actions to 4 at most, keeping the most pertenant ones, and discarding the rest
+
     0. TIME CHANGES:
        - Track any changes to the time or date from the narration
        - Time must always pass, however slight, even in seconds is fine, but it must be a later time than before
@@ -404,7 +409,6 @@ def update_game_state(current_state, player_request, narrator_response):
     4. CHARACTER CHANGES:
         - If the player interacts with a character, update that character's thoughts, inventory, and statusEffects
         - If the character moves somewhere else, update their location, and create or update the location they enter if necessary
-        - Every time, you must come up with some new possible actions for the character to perform, these actions must be interesting and move the plot forward.
     
     4. WIN/LOSE CONDITIONS:
        - Check if the player has achieved the objective. If so, set gameStatus="win"
@@ -479,7 +483,7 @@ def get_narrator_response(current_state, player_action, last_response=None):
     Be creative, and engaging. We're not trying to be whimsical or goofy, but grounded, like a simple but wise fable.
     
     Remember that the player can:
-    - Move around between adjacent locations
+    - Move around between adjacent locations, using either a preposition or cardinal direction
     - Talk to people and animals
     - Use items from their inventory
     - Interact with the environment
@@ -488,6 +492,7 @@ def get_narrator_response(current_state, player_action, last_response=None):
     If the player achieves their objective, make it clear they've won the game!
     If the player does something that would result in death or being permanently trapped, describe it dramatically.
     Make the player aware of any passage of time.
+    Describe locations by relative cardinal directions or prepositions from current location.
 
     Please keep your response to 1 or 2 sentences. Use simple common american english, and avoid poetic phrasing and unnecessary fluff.
     """
@@ -665,7 +670,15 @@ def main():
                 "Type 'restart' to play again or 'quit' to exit.", Fore.YELLOW
             )
 
-        print_wrapped("What would you like to do?", Fore.YELLOW)
+        # Display possible actions
+        possible_actions = game_state.get("playerCharacter", {}).get("possibleActions", [])
+        if possible_actions:
+            print_wrapped("\nPossible actions:", Fore.CYAN)
+            for i, action in enumerate(possible_actions, start=1):
+                print_wrapped(f"{i}. {action}", Fore.WHITE)
+
+        # Ask the player for their action
+        print_wrapped("\nWhat would you like to do?", Fore.YELLOW)
         player_action = input("> ")
 
         if player_action.lower() in ["quit", "exit", "q"]:
