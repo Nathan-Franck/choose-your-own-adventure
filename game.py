@@ -242,7 +242,7 @@ The game state should be in JSON format with the following structure:
     "statusEffects": [
       {
         "description": "Brief description of status",
-        "timeSinceApplied": "duration",
+        "startTime": "When the status was first aquired",
         "expired": false
       }
     ]
