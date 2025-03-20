@@ -111,12 +111,6 @@ def print_debug(title, content, color=Fore.MAGENTA):
 def call_gemini(prompt, temperature=0.7, max_tokens=8192):
     """Call the Gemini API with the given prompt."""
     try:
-        # if DEBUG:
-        #     print_debug("Gemini API Request", {
-        #         "model": args.gemini_model,
-        #         "temperature": temperature,
-        #         "prompt": prompt
-        #     })
 
         contents = [
             types.Content(
@@ -142,9 +136,6 @@ def call_gemini(prompt, temperature=0.7, max_tokens=8192):
         )
 
         result = response.text
-
-        # if DEBUG:
-        #     print_debug("Gemini API Response", result, Fore.GREEN)
 
         return result
     except Exception as e:
@@ -246,6 +237,9 @@ The game state should be in JSON format with the following structure:
         "expired": false
       }
     ]
+    "possibleActions": [
+        "2/3 word description of an action"
+    ]
   },
   "characters": [
     {
@@ -293,6 +287,7 @@ def generate_scenario():
     Be creative, and engaging. Keep your response to at most 1 short paragraph, and use simple language that someone learning english would understand.
     We're not trying to be whimsical or goofy, but grounded, like a simple but wise fable.
     Don't be too verbose, just a short paragraph. Use words a 4 year old would understand.
+    There should be a cat named flowers in the story.
     Clearly state the win objective at the end.
     """
 
@@ -409,6 +404,7 @@ def update_game_state(current_state, player_request, narrator_response):
     4. CHARACTER CHANGES:
         - If the player interacts with a character, update that character's thoughts, inventory, and statusEffects
         - If the character moves somewhere else, update their location, and create or update the location they enter if necessary
+        - Every time, you must come up with some new possible actions for the character to perform, these actions must be interesting and move the plot forward.
     
     4. WIN/LOSE CONDITIONS:
        - Check if the player has achieved the objective. If so, set gameStatus="win"
@@ -493,7 +489,7 @@ def get_narrator_response(current_state, player_action, last_response=None):
     If the player does something that would result in death or being permanently trapped, describe it dramatically.
     Make the player aware of any passage of time.
 
-    Please keep your response to 1 or 2 sentences. Use simple common american english.
+    Please keep your response to 1 or 2 sentences. Use simple common american english, and avoid poetic phrasing and unnecessary fluff.
     """
 
     messages = [{"role": "user", "content": narrator_prompt}]
@@ -559,10 +555,56 @@ def load_game_state(filename="game_state.json"):
         print_wrapped(f"Error loading game state: {e}", Fore.RED)
         return None
 
+import subprocess
+import shutil
+
+def speak(text):
+    # Check if Piper exists
+    piper_path = "./piper/piper"
+    if not os.path.exists(piper_path):
+        print_wrapped("Piper not found! Please check the installation.", Fore.RED)
+        return
+
+    # Check if aplay is available
+    if not shutil.which("aplay"):
+        print_wrapped("ALSA utilities (aplay) not found!", Fore.RED)
+        return
+
+    model_path = "./piper/models/en_GB-alan-low.onnx"
+
+    # Run Piper and pipe output to aplay
+    piper_process = subprocess.Popen(
+        [piper_path, "--output_raw", "--model", model_path],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+
+    # Send text to Piper's stdin
+    piper_process.stdin.write(text.encode("utf-8"))
+    piper_process.stdin.close()
+
+    # Pipe Piper's raw audio output to aplay
+    audio_process = subprocess.Popen(
+        ["aplay", "-f", "S16_LE", "-r", "16000", "-c", "1"],
+        stdin=piper_process.stdout
+    )
+
+    # Wait for both processes to complete
+    piper_process.stdout.close()
+    piper_process.wait()
+    audio_process.wait()
+            
+    # except Exception as e:
+    #     print_wrapped(f"Error with TTS: {str(e)}", Fore.RED)
+    #     return False
+
 
 def main():
     clear_screen()
-    print_wrapped("Welcome to Local Adventure!", Fore.CYAN)
+    welcome_message = "Welcome to Local Adventure!"
+    speak(welcome_message)
+    print_wrapped(welcome_message, Fore.CYAN)
     print_wrapped("Type 'quit' at any time to exit the game.", Fore.YELLOW)
     print_wrapped("Type 'debug' to toggle debug information.", Fore.YELLOW)
     print_wrapped("Type 'restart' to start a new game.", Fore.YELLOW)
@@ -590,6 +632,8 @@ def main():
         print_wrapped("\n" + "=" * 80 + "\n", Fore.CYAN)
         print_wrapped(scenario, Fore.WHITE)
         print_wrapped("\n" + "=" * 80 + "\n", Fore.CYAN)
+
+        speak(scenario)
 
         return scenario, game_state
 
@@ -641,6 +685,7 @@ def main():
             narrator_response = get_narrator_response(
                 game_state, player_action, last_response
             )
+            speak(narrator_response)
             game_state = update_game_state(
                 game_state, player_action, narrator_response
             )
