@@ -5,8 +5,11 @@ import os
 import textwrap
 import argparse
 from colorama import Fore, Style, init
-import base64
 import traceback
+import sys
+import time
+import copy
+import pygame
 
 # Optional Gemini imports - will be imported only if needed
 gemini_available = False
@@ -76,6 +79,98 @@ if args.model == "gemini":
 
     gemini_client = genai.Client(api_key=api_key)
 
+def setup_controller():
+    """Initialize pygame and controller support."""
+    pygame.init()
+    pygame.joystick.init()
+    
+    # Check if any controllers are connected
+    controller_count = pygame.joystick.get_count()
+    if controller_count == 0:
+        print_wrapped("No controllers detected. Using keyboard controls.", Fore.YELLOW)
+        return None
+    
+    # Initialize the first controller
+    controller = pygame.joystick.Joystick(0)
+    controller.init()
+    print_wrapped(f"Controller connected: {controller.get_name()}", Fore.GREEN)
+    return controller
+
+def get_selected_action(controller, possible_actions):
+    """Get the currently selected action based on analog stick position."""
+    if not controller or not possible_actions:
+        return None
+    
+    # Get the left analog stick position
+    x_axis = controller.get_axis(0)
+    y_axis = controller.get_axis(1)
+    
+    # Determine which quadrant the stick is pointing to
+    if len(possible_actions) <= 1:
+        return 0  # Only one option
+    elif len(possible_actions) == 2:
+        # For two options, use left/right
+        if x_axis < -0.25:
+            return 0
+        elif x_axis > 0.25:
+            return 1
+        else:
+            return None
+    else:
+        # For 3-4 options, use quadrants
+        if x_axis < -0.25 and y_axis < -0.25:  # Top-left
+            return 0
+        elif x_axis > 0.25 and y_axis < -0.25:  # Top-right
+            return 1
+        elif x_axis < -0.25 and y_axis > 0.25:  # Bottom-left
+            return 2
+        elif x_axis > 0.25 and y_axis > 0.25 and len(possible_actions) > 3:  # Bottom-right
+            return 3
+        else:
+            return None
+
+def handle_controller_input(controller, game_state):
+    """Process controller input and return the player's action."""
+    if not controller:
+        return None
+    
+    # Process pygame events to update controller state
+    pygame.event.pump()
+    
+    possible_actions = game_state.get("playerCharacter", {}).get("possibleActions", [])
+    selected_index = get_selected_action(controller, possible_actions)
+    
+    # Highlight the currently selected action if any
+    if selected_index is not None:
+        clear_screen()
+        print_wrapped("\nPossible actions:", Fore.CYAN)
+        for i, action in enumerate(possible_actions):
+            if i == selected_index:
+                print_wrapped(f"{i+1}. {action} <<<", Fore.GREEN)
+                # Read the selected option with TTS
+                speak(action)
+            else:
+                print_wrapped(f"{i+1}. {action}", Fore.WHITE)
+    
+    # Check button presses
+    if controller.get_button(0):  # A button
+        if selected_index is not None and selected_index < len(possible_actions):
+            return possible_actions[selected_index]
+        return None
+    elif controller.get_button(1):  # B button
+        return "try something else"
+    elif controller.get_button(2):  # X button
+        return "look around"
+    elif controller.get_button(3):  # Y button
+        return "check inventory"
+    elif controller.get_button(7):  # Start/Menu button
+        return "what is my objective"
+    elif controller.get_axis(5) > 0.5:  # Right trigger
+        return "attack"
+    elif controller.get_axis(4) > 0.5:  # Left trigger
+        return "defend"
+    
+    return None
 
 def clear_screen():
     """Clear the terminal screen."""
@@ -285,8 +380,8 @@ def generate_scenario():
     4. A brief description of the surroundings and situation, and what other characters are at this location
     5. A clear win objective for the player to achieve (find an item, reach a location, solve a puzzle, etc.)
     
-    Be creative, and engaging. Keep your response to at most 1 short paragraph, and use simple language that someone learning english would understand.
-    We're not trying to be whimsical or goofy, but grounded, like a simple but wise fable.
+    Keep your response to at most 1 short paragraph, and use simple language that someone learning english would understand.
+    The story should be somewhat fantastical but grounded, like a simple but wise fable.
     Don't be too verbose, just a short paragraph. Use words a 4 year old would understand.
     There should be a cat named flowers in the story.
     Clearly state the win objective at the end.
@@ -384,6 +479,11 @@ def update_game_state(current_state, player_request, narrator_response):
     -1. PLAYER ACTIONS:
         - Every time, you must come up with some new possible actions for the character to perform, these actions must be interesting and move the plot forward
         - Please maintain the list of possible player actions to 4 at most, keeping the most pertenant ones, and discarding the rest
+        - Remember that the player can:
+            - Move around between adjacent locations, using either a preposition or cardinal direction
+            - Talk to people and animals
+            - Use items from their inventory
+            - Interact with the environment
 
     0. TIME CHANGES:
        - Track any changes to the time or date from the narration
@@ -472,21 +572,19 @@ def get_narrator_response(current_state, player_action, last_response=None):
     if last_response:
         context = f'Your last narration was: "{last_response}"\n\n'
 
+    # Create a clean version of the game state without possible actions
+    clean_state = copy.deepcopy(current_state)
+    if "playerCharacter" in clean_state and "possibleActions" in clean_state["playerCharacter"]:
+        del clean_state["playerCharacter"]["possibleActions"]
+
     narrator_prompt = f"""
     {context}The current game state is:
     
-    {json.dumps(current_state, indent=2)}
+    {json.dumps(clean_state, indent=2)}
     
     The player's action is: "{player_action}"
     
     As the narrator of this text adventure game, describe what happens next.
-    Be creative, and engaging. We're not trying to be whimsical or goofy, but grounded, like a simple but wise fable.
-    
-    Remember that the player can:
-    - Move around between adjacent locations, using either a preposition or cardinal direction
-    - Talk to people and animals
-    - Use items from their inventory
-    - Interact with the environment
     
     If the player tries to do something impossible, gently explain why it can't be done.
     If the player achieves their objective, make it clear they've won the game!
@@ -628,6 +726,14 @@ def main():
                 f"Using LM Studio API endpoint: {API_URL}", Fore.MAGENTA
             )
 
+    # Initialize controller
+    controller = setup_controller()
+    if controller:
+        print_wrapped("Xbox controller connected. Use analog stick to select actions.", Fore.GREEN)
+        print_wrapped("A: Confirm selection, B: Try something else", Fore.GREEN)
+        print_wrapped("X: Look around, Y: Check inventory", Fore.GREEN)
+        print_wrapped("Start: Check objective, RT: Attack, LT: Defend", Fore.GREEN)
+
     def start_game():
         print_wrapped("\nGenerating your adventure...", Fore.GREEN)
 
@@ -677,9 +783,40 @@ def main():
             for i, action in enumerate(possible_actions, start=1):
                 print_wrapped(f"{i}. {action}", Fore.WHITE)
 
-        # Ask the player for their action
-        print_wrapped("\nWhat would you like to do?", Fore.YELLOW)
-        player_action = input("> ")
+        # Get player action - either from controller or keyboard
+        player_action = None
+        
+        if controller:
+            # Controller input loop
+            print_wrapped("\nUse controller to select an action, or type to enter manually", Fore.YELLOW)
+            while not player_action:
+                # Check for keyboard input
+                if os.name == 'nt':
+                    import msvcrt
+                    if msvcrt.kbhit():
+                        # Switch to keyboard input
+                        player_action = input("> ")
+                        break
+                else:
+                    import select
+                    if select.select([sys.stdin], [], [], 0)[0]:
+                        # Switch to keyboard input
+                        player_action = input("> ")
+                        break
+                
+                # Check controller input
+                controller_action = handle_controller_input(controller, game_state)
+                if controller_action:
+                    player_action = controller_action
+                    print_wrapped(f"> {player_action}", Fore.GREEN)
+                    break
+                
+                # Small delay to prevent CPU hogging
+                time.sleep(0.1)
+        else:
+            # Keyboard-only input
+            print_wrapped("\nWhat would you like to do?", Fore.YELLOW)
+            player_action = input("> ")
 
         if player_action.lower() in ["quit", "exit", "q"]:
             print_wrapped("\nThanks for playing!", Fore.CYAN)
@@ -694,32 +831,26 @@ def main():
             continue
 
         print_wrapped("\nThinking...", Fore.GREEN)
-        try:
-            narrator_response = get_narrator_response(
-                game_state, player_action, last_response
-            )
-            speak(narrator_response)
-            game_state = update_game_state(
-                game_state, player_action, narrator_response
-            )
-        except Exception as e:
-            print_wrapped(f"An error occurred: {e}", Fore.RED)
-            traceback.print_exc()
-            save_game_state(game_state)  # Save before exiting
-            print_wrapped(
-                "Game state saved due to crash. Please restart with --restore"
-                " game_state.json",
-                Fore.YELLOW,
-            )
-            return  # Exit the game loop
+        narrator_response = get_narrator_response(
+            game_state, player_action, last_response
+        )
 
         print_wrapped("\n" + "=" * 80 + "\n", Fore.CYAN)
         print_wrapped(narrator_response, Fore.WHITE)
         print_wrapped("\n" + "=" * 80 + "\n", Fore.CYAN)
 
+        speak(narrator_response)
+
+        game_state = update_game_state(
+            game_state, player_action, narrator_response
+        )
+
         last_response = narrator_response
         save_game_state(game_state)
 
+    # Clean up pygame when exiting
+    if controller:
+        pygame.quit()
 
 if __name__ == "__main__":
     main()
