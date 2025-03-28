@@ -129,6 +129,8 @@ def get_selected_action(controller, possible_actions):
         else:
             return None
 
+selected_index = 0
+
 def handle_controller_input(controller, game_state):
     """Process controller input and return the player's action."""
     if not controller:
@@ -138,10 +140,12 @@ def handle_controller_input(controller, game_state):
     pygame.event.pump()
     
     possible_actions = game_state.get("playerCharacter", {}).get("possibleActions", [])
-    selected_index = get_selected_action(controller, possible_actions)
-    
+    possible_selected_index = get_selected_action(controller, possible_actions)
+
+    global selected_index
     # Highlight the currently selected action if any
-    if selected_index is not None:
+    if possible_selected_index is not None:
+        selected_index = possible_selected_index
         clear_screen()
         print_wrapped("\nPossible actions:", Fore.CYAN)
         for i, action in enumerate(possible_actions):
@@ -151,6 +155,7 @@ def handle_controller_input(controller, game_state):
                 speak(action)
             else:
                 print_wrapped(f"{i+1}. {action}", Fore.WHITE)
+        return None
     
     # Check button presses
     if controller.get_button(0):  # A button
@@ -661,21 +666,37 @@ def load_game_state(filename="game_state.json"):
 import subprocess
 import shutil
 
-def speak(text):
-    # Check if Piper exists
+# Add these global variables
+speak_process = None
+audio_process = None
+stop_speaking = False
+
+def stop_speaking_handler():
+    """Stop the TTS and audio playback"""
+    global speak_process, audio_process, stop_speaking
+    stop_speaking = True
+    
+    if speak_process and speak_process.poll() is None:
+        speak_process.terminate()
+    if audio_process and audio_process.poll() is None:
+        audio_process.terminate()
+
+def speak_in_background(text):
+    """Speak text using Piper in the background"""
+    global speak_process, audio_process, stop_speaking
+    stop_speaking = False
+    
     piper_path = "./piper/piper"
     if not os.path.exists(piper_path):
         print_wrapped("Piper not found! Please check the installation.", Fore.RED)
         return
 
-    # Check if aplay is available
     if not shutil.which("aplay"):
         print_wrapped("ALSA utilities (aplay) not found!", Fore.RED)
         return
 
     model_path = "./piper/models/en_GB-alan-low.onnx"
 
-    # Run Piper and pipe output to aplay
     piper_process = subprocess.Popen(
         [piper_path, "--output_raw", "--model", model_path],
         stdin=subprocess.PIPE,
@@ -683,25 +704,48 @@ def speak(text):
         stderr=subprocess.PIPE
     )
 
-    # Send text to Piper's stdin
-    piper_process.stdin.write(text.encode("utf-8"))
-    piper_process.stdin.close()
-
-    # Pipe Piper's raw audio output to aplay
     audio_process = subprocess.Popen(
-        ["aplay", "-f", "S16_LE", "-r", "16000", "-c", "1"],
+        ["aplay", "-f", "S16_LE", "-r", "24000", "-c", "1"],
         stdin=piper_process.stdout
     )
 
-    # Wait for both processes to complete
-    piper_process.stdout.close()
-    piper_process.wait()
-    audio_process.wait()
-            
-    # except Exception as e:
-    #     print_wrapped(f"Error with TTS: {str(e)}", Fore.RED)
-    #     return False
+    speak_process = piper_process
+    audio_process = audio_process
 
+def speak(text):
+    """Speak text with interruptible playback"""
+    global stop_speaking
+    stop_speaking = False
+    
+    # Start speaking in background
+    speak_thread = threading.Thread(target=speak_in_background, args=(text,))
+    speak_thread.daemon = True
+    speak_thread.start()
+
+    # Monitor for stop request
+    while speak_thread.is_alive() and not stop_speaking:
+        if os.name == 'nt':
+            import msvcrt
+            if msvcrt.kbhit():
+                key = msvcrt.getch().decode()
+                if key.lower() == 's':
+                    stop_speaking_handler()
+                    break
+        else:
+            import select
+            rlist, _, _ = select.select([sys.stdin], [], [], 0)
+            if rlist:
+                key = sys.stdin.read(1).lower()
+                if key == 's':
+                    stop_speaking_handler()
+                    break
+        time.sleep(0.1)
+
+    # Wait for processes to terminate
+    while speak_process and speak_process.poll() is None:
+        time.sleep(0.1)
+    while audio_process and audio_process.poll() is None:
+        time.sleep(0.1)
 
 def main():
     clear_screen()
